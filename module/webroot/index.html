@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0c0f15">
+<title>充电加速</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="topbar-left">
+      <div class="topbar-avatar">⚡</div>
+      <div class="title-wrap">
+        <h1>充电加速</h1>
+        <p class="sub">实时监控</p>
+      </div>
+    </div>
+    <button class="btn ghost" onclick="refresh()">刷新</button>
+  </header>
+
+  <main>
+    <!-- 状态页 -->
+    <section id="page-status" class="page active">
+      <div class="card-grid">
+        <div class="card">
+          <div class="card-label">电量</div>
+          <div class="big" id="v-lv">--</div>
+          <div class="hint">%</div>
+        </div>
+        <div class="card">
+          <div class="card-label">状态</div>
+          <div class="status-line">
+            <span id="runDot" class="dot"></span>
+            <span id="v-st" class="status-text">--</span>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-label">温度</div>
+          <div class="big" id="v-tmp">--</div>
+          <div class="hint">℃</div>
+        </div>
+        <div class="card">
+          <div class="card-label">功率</div>
+          <div class="big" id="v-pwr">--</div>
+          <div class="hint">W</div>
+        </div>
+      </div>
+
+      <div class="current-grid">
+        <div class="current-card">
+          <div class="label">输出电流</div>
+          <div class="value" id="v-out">--</div>
+          <div class="sub">电池→系统 (A)</div>
+        </div>
+        <div class="current-card">
+          <div class="label">输入电流</div>
+          <div class="value" id="v-inp">--</div>
+          <div class="sub">充电器→电池 (A)</div>
+        </div>
+      </div>
+
+      <div class="card memory-card">
+        <div class="panel-title">电池信息</div>
+        <div class="memory-block">
+          <div class="memory-head">
+            <span class="memory-name">电量</span>
+            <span id="p-lv" class="memory-percent">0%</span>
+          </div>
+          <div class="bar"><div id="b-lv" class="bar-fill blue" style="width:0%"></div></div>
+          <div class="memory-meta"><span id="m-lv">--</span></div>
+        </div>
+        <div class="memory-block">
+          <div class="memory-head">
+            <span class="memory-name">温度</span>
+            <span id="p-tmp" class="memory-percent">0℃</span>
+          </div>
+          <div class="bar"><div id="b-tmp" class="bar-fill green" style="width:0%"></div></div>
+          <div class="memory-meta"><span id="m-tmp">--</span></div>
+        </div>
+        <div class="memory-block">
+          <div class="memory-head">
+            <span class="memory-name">功率</span>
+            <span id="p-pwr" class="memory-percent">0W</span>
+          </div>
+          <div class="bar"><div id="b-pwr" class="bar-fill orange" style="width:0%"></div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 曲线页 -->
+    <section id="page-chart" class="page">
+      <div class="card chart-card">
+        <div class="panel-title">充放电曲线</div>
+        <div class="chart-container">
+          <canvas id="chartCanvas"></canvas>
+        </div>
+        <div class="chart-legend">
+          <div class="legend-item">
+            <span class="legend-color" style="background:#ff4757"></span>
+            <span>充电</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-color" style="background:#00d4ff"></span>
+            <span>放电</span>
+          </div>
+        </div>
+      </div>
+      
+      <div class="card">
+        <div class="panel-title">实时数据</div>
+        <div class="setting-item">
+          <div class="setting-info"><div class="setting-title">当前电流</div></div>
+          <div class="setting-control"><span id="chart-cur" class="data-value">-- A</span></div>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info"><div class="setting-title">当前功率</div></div>
+          <div class="setting-control"><span id="chart-pwr" class="data-value">-- W</span></div>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info"><div class="setting-title">数据点数</div></div>
+          <div class="setting-control"><span id="chart-pts" class="data-value">0</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 配置页 -->
+    <section id="page-config" class="page">
+      <div class="form-card">
+        <div class="panel-title">基本参数</div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <div class="setting-title">最大充电电流</div>
+            <div class="setting-desc">单位 mA</div>
+          </div>
+          <div class="setting-control"><input type="number" id="i-cur" value="50000" step="1000"></div>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <div class="setting-title">温控阈值</div>
+            <div class="setting-desc">单位 ℃</div>
+          </div>
+          <div class="setting-control"><input type="number" id="i-tmax" value="52"></div>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <div class="setting-title">恢复温度</div>
+            <div class="setting-desc">单位 ℃</div>
+          </div>
+          <div class="setting-control"><input type="number" id="i-trcv" value="45"></div>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <div class="setting-title">停止充电</div>
+            <div class="setting-desc">电量阈值 %</div>
+          </div>
+          <div class="setting-control"><input type="number" id="i-cstp" value="95"></div>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <div class="setting-title">恢复充电</div>
+            <div class="setting-desc">电量阈值 %</div>
+          </div>
+          <div class="setting-control"><input type="number" id="i-csta" value="80"></div>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <div class="setting-title">模拟温度</div>
+            <div class="setting-desc">单位 ℃</div>
+          </div>
+          <div class="setting-control"><input type="number" id="i-tsim" value="28"></div>
+        </div>
+      </div>
+
+      <div class="btn-group">
+        <button class="btn primary" onclick="saveCfg()">保存配置</button>
+      </div>
+
+      <div class="form-card">
+        <div class="panel-title">功能开关</div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <div class="setting-title">温度模拟</div>
+            <div class="setting-desc">将电池温度模拟为指定值</div>
+          </div>
+          <div class="setting-control">
+            <label class="switch"><input id="sw-TEMP_SIMULATE" type="checkbox" onchange="toggleSw('TEMP_SIMULATE')"><span class="slider"></span></label>
+          </div>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <div class="setting-title">关闭阶梯充电</div>
+            <div class="setting-desc">关闭后全速充电</div>
+          </div>
+          <div class="setting-control">
+            <label class="switch"><input id="sw-STEP_CHARGING_DISABLED" type="checkbox" onchange="toggleSw('STEP_CHARGING_DISABLED')"><span class="slider"></span></label>
+          </div>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <div class="setting-title">温控保护</div>
+            <div class="setting-desc">温度过高时限制电流</div>
+          </div>
+          <div class="setting-control">
+            <label class="switch"><input id="sw-TEMP_CTRL" type="checkbox" onchange="toggleSw('TEMP_CTRL')"><span class="slider"></span></label>
+          </div>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <div class="setting-title">电量控制</div>
+            <div class="setting-desc">到达阈值停止充电</div>
+          </div>
+          <div class="setting-control">
+            <label class="switch"><input id="sw-POWER_CTRL" type="checkbox" onchange="toggleSw('POWER_CTRL')"><span class="slider"></span></label>
+          </div>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <div class="setting-title">伪旁路供电</div>
+            <div class="setting-desc">特定应用降低电流</div>
+          </div>
+          <div class="setting-control">
+            <label class="switch"><input id="sw-BYPASS_CHARGE" type="checkbox" onchange="toggleSw('BYPASS_CHARGE')"><span class="slider"></span></label>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 日志页 -->
+    <section id="page-log" class="page">
+      <div class="log-card">
+        <div class="panel-head">
+          <h2 class="panel-title">运行日志</h2>
+          <button class="btn ghost" onclick="refreshLog()">刷新</button>
+        </div>
+        <pre id="log-box">加载中...</pre>
+      </div>
+      <div class="btn-group">
+        <button class="btn ghost" onclick="clearLog()">清空日志</button>
+        <button class="btn danger" onclick="resetCfg()">恢复默认配置</button>
+      </div>
+    </section>
+  </main>
+</div>
+
+<nav class="bottom-nav">
+  <button class="nav-item active" onclick="switchPage('status',this)">📊 状态</button>
+  <button class="nav-item" onclick="switchPage('chart',this)">📈 曲线</button>
+  <button class="nav-item" onclick="switchPage('config',this)">⚙️ 配置</button>
+  <button class="nav-item" onclick="switchPage('log',this)">📝 日志</button>
+</nav>
+
+<div class="toast" id="toast"></div>
+<script src="app.js"></script>
+</body>
+</html>
