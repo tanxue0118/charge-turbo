@@ -1,0 +1,57 @@
+# 配置更改实时生效
+# CYCLE_TIME 必须大于 0，其他配置必须大于等于 0
+# 所有配置都必须为整数，最大值为 2147483647
+
+# 循环间隔时间，单位：秒
+# 默认 1 秒，不建议大于 5 秒
+CYCLE_TIME=1
+
+# 最大充电电流，单位：μA
+# 经测试超过手机理论最大充电电流一般不会出现问题，所以保持默认即可
+CURRENT_MAX=50000000
+
+# 是否关闭阶梯式充电
+# 1 为关闭，其他数字为不关闭
+STEP_CHARGING_DISABLED=0
+
+# 是否启用温控限流
+# 1 为启用，其他数字为禁用
+TEMP_CTRL=1
+
+# 是否启用电量控制
+# 1 为启用，其他数字为禁用
+POWER_CTRL=0
+
+# 关闭阶梯式充电的电量阈值
+# 电量大于等于此值时关闭阶梯式充电
+STEP_CHARGING_DISABLED_THRESHOLD=15
+
+# 停止充电的电量阈值
+# POWER_CTRL=1 时生效
+CHARGE_STOP=95
+
+# 恢复充电的电量阈值
+# POWER_CTRL=1 时生效
+CHARGE_START=80
+
+# 降低充电电流的温度阈值，单位：℃
+TEMP_MAX=52
+
+# 高于温度阈值时的最大充电电流，单位：μA
+HIGHEST_TEMP_CURRENT=2000000
+
+# 恢复快充的温度阈值，单位：℃
+RECHARGE_TEMP=45
+
+# 是否启用电池温度模拟功能
+# 1 为启用，其他数字为禁用
+TEMP_SIMULATE=0
+
+# 模拟的电池温度，单位：℃
+# TEMP_SIMULATE=1 时生效
+TEMP_SIMULATE_VALUE=28
+
+# 是否启用“伪”旁路供电功能
+# 1 为启用，其他数字为禁用
+# 开启后请配置 /data/adb/modules/turbo-charge/bypass_charge.txt
+BYPASS_CHARGE=0

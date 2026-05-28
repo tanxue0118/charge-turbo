@@ -1,0 +1,17 @@
+# 之所以叫“伪”旁路供电，是因为在不支持硬件旁路供电的手机上无法实现真正旁路供电
+# 本模块只能尽可能降低充电电流，且很多设备无法将充电电流降到 0mA
+# Linux power_supply 文档：
+# https://www.kernel.org/doc/html/latest/power/power_supply_class.html
+
+# 在部分设备上，500mA 是比较常见的最低有效值
+# 低于这个值可能会被内核忽略，所以程序默认将伪旁路供电电流设置为 500mA
+
+# 使用方法：
+# 一行一个 APP 包名
+# 打开对应 APP 时会进入“伪”旁路供电模式
+# 空行和以 # 开头的行会被忽略
+
+# 示例：
+# com.tencent.tmgp.sgame
+# com.miHoYo.Yuanshen
+# com.hypergryph.arknights

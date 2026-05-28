@@ -1,0 +1,6 @@
+id=turbo-charge
+name=充电优化
+version=v4
+versionCode=2026528
+author=一只做梦的猫（二改）
+description=通过修改温控配置温和移除温控限制，支持电池温度模拟，含Web控制面板。配置文件:/data/adb/modules/turbo-charge/option.txt
