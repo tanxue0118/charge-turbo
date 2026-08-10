@@ -18,13 +18,19 @@ static void get_utc8_time(struct tm *ptm)
 
 void printf_with_time(const char *format, ...)
 {
-    char buffer[LOG_BUF_SIZE] = {0};
-    struct tm time_now;
     va_list ap;
 
     va_start(ap, format);
-    vsnprintf(buffer, sizeof(buffer), format, ap);
+    vprintf_with_time(format, ap);
     va_end(ap);
+}
+
+void vprintf_with_time(const char *format, va_list ap)
+{
+    char buffer[LOG_BUF_SIZE] = {0};
+    struct tm time_now;
+
+    vsnprintf(buffer, sizeof(buffer), format, ap);
 
     get_utc8_time(&time_now);
 

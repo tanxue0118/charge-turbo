@@ -86,6 +86,13 @@ void handle_exit_signal(int sig)
     program_running = 0;
 }
 
+int clamp_int(int value, int min_value, int max_value)
+{
+    if (value < min_value) return min_value;
+    if (value > max_value) return max_value;
+    return value;
+}
+
 int clamp_meizu_charge_level(int level)
 {
     if (level < 1) return 10;

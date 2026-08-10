@@ -3,6 +3,7 @@
 
 unsigned long read_option_generation(void);
 int read_one_option(const char *name);
+int read_bool_option(const char *name);
 void *read_option_file_thread(void *arg);
 
 #endif

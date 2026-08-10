@@ -52,6 +52,33 @@ void set_array_value(char **files, int num, const char *value)
     }
 }
 
+/* 优先写入电流控制节点，没有时回退到电流限制节点；返回 1 表示使用了电流控制节点。 */
+int apply_charge_current(const ChargeCurrentNodes *nodes, const char *value)
+{
+    if (!nodes || !value) return 0;
+
+    if (nodes->max_count > 0) {
+        set_array_value(nodes->max_files, nodes->max_count, value);
+        return 1;
+    }
+
+    set_array_value(nodes->limit_files, nodes->limit_count, value);
+    return 0;
+}
+
+int restore_charge_current(const ChargeCurrentNodes *nodes, const char *normal_current)
+{
+    if (!nodes) return 0;
+
+    if (nodes->max_count > 0 && normal_current) {
+        set_array_value(nodes->max_files, nodes->max_count, normal_current);
+        return 1;
+    }
+
+    set_array_value(nodes->limit_files, nodes->limit_count, "-1");
+    return 0;
+}
+
 static int write_meizu_wired_level_node_with_echo(const char *path, int level)
 {
     if (!path) return -1;

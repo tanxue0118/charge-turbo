@@ -49,24 +49,20 @@ void handle_meizu_generation_change(int *last_meizu_thermal_key,
 
 void step_charge_ctl(const char *value)
 {
-    set_value("/sys/class/power_supply/battery/step_charging_enabled", value);
-    set_value("/sys/class/power_supply/battery/sw_jeita_enabled", value);
+    set_value(BATTERY_SUPPLY_DIR "/step_charging_enabled", value);
+    set_value(BATTERY_SUPPLY_DIR "/sw_jeita_enabled", value);
 }
 
 void charge_ctl(const char *value)
 {
-    set_value("/sys/class/power_supply/battery/charging_enabled", value);
-    set_value("/sys/class/power_supply/battery/battery_charging_enabled", value);
+    set_value(BATTERY_SUPPLY_DIR "/charging_enabled", value);
+    set_value(BATTERY_SUPPLY_DIR "/battery_charging_enabled", value);
 
-    if (atoi(value)) {
-        set_value("/sys/class/power_supply/battery/input_suspend", "0");
-        set_value("/sys/class/qcom-battery/restricted_charging", "0");
-        set_value("/sys/class/qcom-battery/restrict_chg", "0");
-    } else {
-        set_value("/sys/class/power_supply/battery/input_suspend", "1");
-        set_value("/sys/class/qcom-battery/restricted_charging", "1");
-        set_value("/sys/class/qcom-battery/restrict_chg", "1");
-    }
+    const char *suspend = atoi(value) ? "0" : "1";
+
+    set_value(BATTERY_SUPPLY_DIR "/input_suspend", suspend);
+    set_value("/sys/class/qcom-battery/restricted_charging", suspend);
+    set_value("/sys/class/qcom-battery/restrict_chg", suspend);
 }
 
 void restore_meizu_wired_level(MeizuWiredLevelState *state)
@@ -168,8 +164,7 @@ static int is_battery_power_supply(const char *dir)
 {
     if (!dir) return 1;
 
-    const char *base = strrchr(dir, '/');
-    base = base ? base + 1 : dir;
+    const char *base = path_basename(dir);
 
     if (contains_ignore_case(base, "battery") ||
         contains_ignore_case(base, "bms")) {
@@ -178,7 +173,7 @@ static int is_battery_power_supply(const char *dir)
 
     char type_path[PATH_MAX] = {0};
     char type[64] = {0};
-    snprintf(type_path, sizeof(type_path), "%s/type", dir);
+    join_path(type_path, sizeof(type_path), dir, "type");
 
     return read_file(type_path, type, sizeof(type)) &&
            (contains_ignore_case(type, "Battery") ||
@@ -192,7 +187,7 @@ static void discover_external_power_nodes(void)
     external_power_nodes_discovered = 1;
 
     char **power_supply_dirs = NULL;
-    int dir_num = list_dir("/sys/class/power_supply", &power_supply_dirs);
+    int dir_num = list_dir(POWER_SUPPLY_DIR, &power_supply_dirs);
 
     for (int i = 0; i < dir_num && external_power_node_count < EXTERNAL_POWER_NODE_MAX; i++) {
         const char *dir = power_supply_dirs[i];
@@ -201,7 +196,7 @@ static void discover_external_power_nodes(void)
         const char *names[] = {"present", "online"};
         for (int j = 0; j < 2 && external_power_node_count < EXTERNAL_POWER_NODE_MAX; j++) {
             char path[PATH_MAX] = {0};
-            snprintf(path, sizeof(path), "%s/%s", dir, names[j]);
+            join_path(path, sizeof(path), dir, names[j]);
             if (!file_exists(path)) continue;
 
             external_power_nodes[external_power_node_count] = strdup(path);
@@ -227,8 +222,7 @@ int read_external_power_state(void)
         char value[32] = {0};
         if (!read_file(external_power_nodes[i], value, sizeof(value))) continue;
 
-        const char *base = strrchr(external_power_nodes[i], '/');
-        base = base ? base + 1 : external_power_nodes[i];
+        const char *base = path_basename(external_power_nodes[i]);
 
         if (strcmp(base, "present") == 0) {
             present_readable = 1;
@@ -244,11 +238,6 @@ int read_external_power_state(void)
     return -1;
 }
 
-static int text_equals_ignore_case(const char *left, const char *right)
-{
-    return left && right && strcasecmp(left, right) == 0;
-}
-
 static int write_bypass_value(const char *path, const char *value)
 {
     char verify[128] = {0};
@@ -257,7 +246,7 @@ static int write_bypass_value(const char *path, const char *value)
 
     set_value(path, value);
     return read_file(path, verify, sizeof(verify)) &&
-           text_equals_ignore_case(verify, value);
+           equals_ignore_case(verify, value);
 }
 
 static void clear_bypass_state(BypassState *state)
@@ -297,7 +286,7 @@ static int try_enable_hardware_node(BypassState *state,
     if (!state || !path || !active_value) return 0;
     if (!read_file(path, original, sizeof(original)) || original[0] == '\0') return 0;
 
-    if (!text_equals_ignore_case(original, active_value) &&
+    if (!equals_ignore_case(original, active_value) &&
         !write_bypass_value(path, active_value)) {
         set_value(path, original);
         return 0;
@@ -314,34 +303,37 @@ static int derive_generic_bypass_value(const char *current,
 {
     if (!current || !active || active_size == 0) return 0;
 
-    if (text_equals_ignore_case(current, "0"))
-        snprintf(active, active_size, "1");
-    else if (text_equals_ignore_case(current, "off"))
-        snprintf(active, active_size, "on");
-    else if (text_equals_ignore_case(current, "disabled"))
-        snprintf(active, active_size, "enabled");
-    else if (text_equals_ignore_case(current, "false"))
-        snprintf(active, active_size, "true");
-    else if (text_equals_ignore_case(current, "no"))
-        snprintf(active, active_size, "yes");
-    else if (text_equals_ignore_case(current, "1") ||
-             text_equals_ignore_case(current, "on") ||
-             text_equals_ignore_case(current, "enabled") ||
-             text_equals_ignore_case(current, "true") ||
-             text_equals_ignore_case(current, "yes"))
-        snprintf(active, active_size, "%s", current);
-    else
-        return 0;
+    static const struct {
+        const char *inactive;
+        const char *active;
+    } pairs[] = {
+        {"0", "1"},
+        {"off", "on"},
+        {"disabled", "enabled"},
+        {"false", "true"},
+        {"no", "yes"}
+    };
 
-    return 1;
+    for (size_t i = 0; i < sizeof(pairs) / sizeof(pairs[0]); i++) {
+        if (equals_ignore_case(current, pairs[i].inactive)) {
+            snprintf(active, active_size, "%s", pairs[i].active);
+            return 1;
+        }
+
+        if (equals_ignore_case(current, pairs[i].active)) {
+            snprintf(active, active_size, "%s", current);
+            return 1;
+        }
+    }
+
+    return 0;
 }
 
 static int is_generic_bypass_node(const char *path)
 {
     if (!path) return 0;
 
-    const char *base = strrchr(path, '/');
-    base = base ? base + 1 : path;
+    const char *base = path_basename(path);
 
     const char *names[] = {
         "bypass_charging",
@@ -362,7 +354,7 @@ static int is_generic_bypass_node(const char *path)
 static int try_standard_charge_type_bypass(BypassState *state)
 {
     char **power_supply_dirs = NULL;
-    int dir_num = list_dir("/sys/class/power_supply", &power_supply_dirs);
+    int dir_num = list_dir(POWER_SUPPLY_DIR, &power_supply_dirs);
     int enabled = 0;
 
     for (int i = 0; i < dir_num && !enabled; i++) {
@@ -370,8 +362,8 @@ static int try_standard_charge_type_bypass(BypassState *state)
         char type_path[PATH_MAX] = {0};
         char charge_types[256] = {0};
 
-        snprintf(types_path, sizeof(types_path), "%s/charge_types", power_supply_dirs[i]);
-        snprintf(type_path, sizeof(type_path), "%s/charge_type", power_supply_dirs[i]);
+        join_path(types_path, sizeof(types_path), power_supply_dirs[i], "charge_types");
+        join_path(type_path, sizeof(type_path), power_supply_dirs[i], "charge_type");
 
         if (!file_exists(type_path) ||
             !read_file(types_path, charge_types, sizeof(charge_types)) ||
@@ -398,7 +390,7 @@ static int try_known_hardware_node(BypassState *state,
 
     if (!read_file(path, original, sizeof(original)) ||
         !derive_generic_bypass_value(original, derived_value, sizeof(derived_value)) ||
-        text_equals_ignore_case(derived_value, preferred_value)) {
+        equals_ignore_case(derived_value, preferred_value)) {
         return 0;
     }
 
@@ -413,12 +405,12 @@ static int try_known_hardware_bypass(BypassState *state)
     } candidates[] = {
         {"/sys/kernel/nubia_charge/charger_bypass", "on"},
         {"/sys/devices/platform/charger/bypass_charger", "1"},
-        {"/sys/class/power_supply/battery/bypass_charging", "1"},
-        {"/sys/class/power_supply/battery/bypass_charge", "1"},
-        {"/sys/class/power_supply/battery/bypass_chg", "1"},
-        {"/sys/class/power_supply/battery/charge_bypass", "1"},
-        {"/sys/class/power_supply/battery/charger_bypass", "1"},
-        {"/sys/class/power_supply/battery/bypass_charger", "1"}
+        {BATTERY_SUPPLY_DIR "/bypass_charging", "1"},
+        {BATTERY_SUPPLY_DIR "/bypass_charge", "1"},
+        {BATTERY_SUPPLY_DIR "/bypass_chg", "1"},
+        {BATTERY_SUPPLY_DIR "/charge_bypass", "1"},
+        {BATTERY_SUPPLY_DIR "/charger_bypass", "1"},
+        {BATTERY_SUPPLY_DIR "/bypass_charger", "1"}
     };
 
     for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
@@ -435,7 +427,7 @@ static int try_known_hardware_bypass(BypassState *state)
 static int try_discovered_hardware_bypass(BypassState *state)
 {
     char **power_supply_dirs = NULL;
-    int dir_num = list_dir("/sys/class/power_supply", &power_supply_dirs);
+    int dir_num = list_dir(POWER_SUPPLY_DIR, &power_supply_dirs);
     int enabled = 0;
 
     for (int i = 0; i < dir_num && !enabled; i++) {
@@ -494,25 +486,9 @@ static int restore_hardware_bypass(BypassState *state)
     return 0;
 }
 
-static void restore_normal_current(char **current_max_file,
-                                   int current_max_file_num,
-                                   char **current_limit_file,
-                                   int current_limit_file_num,
-                                   const char *normal_current)
-{
-    if (current_max_file_num > 0 && normal_current) {
-        set_array_value(current_max_file, current_max_file_num, normal_current);
-    } else {
-        set_array_value(current_limit_file, current_limit_file_num, "-1");
-    }
-}
-
 static int sync_bypass_supply(BypassState *state,
                               int requested,
-                              char **current_max_file,
-                              int current_max_file_num,
-                              char **current_limit_file,
-                              int current_limit_file_num,
+                              const ChargeCurrentNodes *nodes,
                               const char *normal_current)
 {
     if (!state) return 0;
@@ -521,9 +497,7 @@ static int sync_bypass_supply(BypassState *state,
         if (state->mode == BYPASS_MODE_HARDWARE) {
             restore_hardware_bypass(state);
         } else if (state->mode == BYPASS_MODE_COMPATIBILITY) {
-            restore_normal_current(current_max_file, current_max_file_num,
-                                   current_limit_file, current_limit_file_num,
-                                   normal_current);
+            restore_charge_current(nodes, normal_current);
             printf_with_time("旁路供电兼容模式已退出，恢复正常充电电流");
             clear_bypass_state(state);
         } else if (state->mode == BYPASS_MODE_UNAVAILABLE) {
@@ -536,7 +510,7 @@ static int sync_bypass_supply(BypassState *state,
     if (state->mode == BYPASS_MODE_HARDWARE) {
         char current[128] = {0};
         if (read_file(state->node_path, current, sizeof(current)) &&
-            text_equals_ignore_case(current, state->active_value)) {
+            equals_ignore_case(current, state->active_value)) {
             return 1;
         }
 
@@ -551,10 +525,7 @@ static int sync_bypass_supply(BypassState *state,
     }
 
     if (state->mode == BYPASS_MODE_COMPATIBILITY) {
-        if (current_max_file_num > 0)
-            set_array_value(current_max_file, current_max_file_num, BYPASS_CHARGE_CURRENT);
-        else
-            set_array_value(current_limit_file, current_limit_file_num, BYPASS_CHARGE_CURRENT);
+        apply_charge_current(nodes, BYPASS_CHARGE_CURRENT);
         return 1;
     }
 
@@ -566,14 +537,11 @@ static int sync_bypass_supply(BypassState *state,
 
     if (enable_hardware_bypass(state)) return 1;
 
-    if (current_max_file_num > 0 || current_limit_file_num > 0) {
+    if (nodes && (nodes->max_count > 0 || nodes->limit_count > 0)) {
         state->mode = BYPASS_MODE_COMPATIBILITY;
         printf_with_time("设备未找到可验证的硬件旁路节点，使用 500mA 兼容模式");
 
-        if (current_max_file_num > 0)
-            set_array_value(current_max_file, current_max_file_num, BYPASS_CHARGE_CURRENT);
-        else
-            set_array_value(current_limit_file, current_limit_file_num, BYPASS_CHARGE_CURRENT);
+        apply_charge_current(nodes, BYPASS_CHARGE_CURRENT);
         return 1;
     }
 
@@ -603,25 +571,10 @@ void power_ctl(PowerControlState *state,
 
     int configured_charge_stop = read_one_option("CHARGE_STOP");
     int configured_charge_start = read_one_option("CHARGE_START");
-    int charge_stop = configured_charge_stop;
-    int charge_start = configured_charge_start;
-    int thresholds_adjusted = 0;
-
-    if (charge_stop < 1) {
-        charge_stop = 1;
-        thresholds_adjusted = 1;
-    } else if (charge_stop > 100) {
-        charge_stop = 100;
-        thresholds_adjusted = 1;
-    }
-
-    if (charge_start < 0) {
-        charge_start = 0;
-        thresholds_adjusted = 1;
-    } else if (charge_start > 100) {
-        charge_start = 100;
-        thresholds_adjusted = 1;
-    }
+    int charge_stop = clamp_int(configured_charge_stop, 1, 100);
+    int charge_start = clamp_int(configured_charge_start, 0, 100);
+    int thresholds_adjusted = charge_stop != configured_charge_stop ||
+                              charge_start != configured_charge_start;
 
     if (charge_start >= charge_stop) {
         charge_start = charge_stop - 1;
@@ -659,7 +612,7 @@ void power_ctl(PowerControlState *state,
     }
 
     char power[16] = {0};
-    if (!read_file("/sys/class/power_supply/battery/capacity", power, sizeof(power))) {
+    if (!read_file(BATTERY_CAPACITY_PATH, power, sizeof(power))) {
         printf_with_time("无法读取电量，保持上次电量控制状态");
     } else {
         int power_int = atoi(power);
@@ -790,19 +743,13 @@ void sync_bypass_control(BypassState *bypass_state,
                          PowerControlState *power_state,
                          int stop_requested,
                          int bypass_requested,
-                         char **current_max_file,
-                         int current_max_file_num,
-                         char **current_limit_file,
-                         int current_limit_file_num,
+                         const ChargeCurrentNodes *nodes,
                          const char *normal_current)
 {
     if (!bypass_state || !power_state) return;
 
     if (stop_requested) {
-        int bypass_still_active = sync_bypass_supply(bypass_state, 0,
-                                                     current_max_file, current_max_file_num,
-                                                     current_limit_file, current_limit_file_num,
-                                                     normal_current);
+        int bypass_still_active = sync_bypass_supply(bypass_state, 0, nodes, normal_current);
 
         if (!power_state->stop_applied) {
             if (bypass_still_active) {
@@ -819,26 +766,17 @@ void sync_bypass_control(BypassState *bypass_state,
         power_state->stop_applied = 0;
     }
 
-    sync_bypass_supply(bypass_state, bypass_requested,
-                       current_max_file, current_max_file_num,
-                       current_limit_file, current_limit_file_num,
-                       normal_current);
+    sync_bypass_supply(bypass_state, bypass_requested, nodes, normal_current);
 }
 
 void restore_charge_control(BypassState *bypass_state,
                             PowerControlState *power_state,
-                            char **current_max_file,
-                            int current_max_file_num,
-                            char **current_limit_file,
-                            int current_limit_file_num,
+                            const ChargeCurrentNodes *nodes,
                             const char *normal_current)
 {
     if (bypass_state) {
         for (int attempt = 0; attempt < BYPASS_RESTORE_RETRIES; attempt++) {
-            int bypass_still_active = sync_bypass_supply(bypass_state, 0,
-                                                         current_max_file, current_max_file_num,
-                                                         current_limit_file, current_limit_file_num,
-                                                         normal_current);
+            int bypass_still_active = sync_bypass_supply(bypass_state, 0, nodes, normal_current);
             if (!bypass_still_active || bypass_state->mode != BYPASS_MODE_HARDWARE)
                 break;
             if (attempt + 1 < BYPASS_RESTORE_RETRIES)

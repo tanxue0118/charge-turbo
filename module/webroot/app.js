@@ -89,7 +89,7 @@ chmod 0644 '${path}'`);
   if (errno !== 0) throw new Error(stderr || 'write failed');
 }
 
-let cfg = {
+const DEFAULT_CFG = Object.freeze({
   CYCLE_TIME: 1, CURRENT_MAX: 50000000,
   STEP_CHARGING_DISABLED: 0, STEP_CHARGING_DISABLED_THRESHOLD: 15,
   TEMP_CTRL: 1, POWER_CTRL: 0,
@@ -101,7 +101,9 @@ let cfg = {
   THERMAL_MOUNT_MODE: 0,
   MEIZU_DEVICE: 0, MEIZU_CHARGE_LEVEL: 10, MEIZU_THERMAL_SCHEME: 2,
   BYPASS_CHARGE: 0
-};
+});
+
+let cfg = { ...DEFAULT_CFG };
 
 let st = { lv: 0, status: '--', tmp: 0, inp: 0, out: 0, pwr: 0, volt: 0 };
 const MAX_POINTS = 120;
@@ -472,55 +474,38 @@ function drawChart() {
     ctx.fillText(chartData.labels[i], x, h - padding.bottom + 14);
   }
 
-  ctx.strokeStyle = '#ff4757';
-  ctx.lineWidth = 2;
-  ctx.lineJoin = 'round';
-  ctx.lineCap = 'round';
-  ctx.beginPath();
-  for (let i = 0; i < displayInput.length; i++) {
-    const x = padding.left + (chartW / (displayInput.length - 1)) * i;
-    const y = padding.top + chartH - (displayInput[i] / maxVal * chartH);
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  }
-  ctx.stroke();
+  const pointAt = (values, i) => ({
+    x: padding.left + (chartW / (values.length - 1)) * i,
+    y: padding.top + chartH - (values[i] / maxVal * chartH)
+  });
 
-  ctx.fillStyle = 'rgba(255,71,87,.10)';
-  ctx.beginPath();
-  ctx.moveTo(padding.left, padding.top + chartH);
-  for (let i = 0; i < displayInput.length; i++) {
-    const x = padding.left + (chartW / (displayInput.length - 1)) * i;
-    const y = padding.top + chartH - (displayInput[i] / maxVal * chartH);
-    ctx.lineTo(x, y);
-  }
-  ctx.lineTo(padding.left + chartW, padding.top + chartH);
-  ctx.closePath();
-  ctx.fill();
+  const drawSeries = (values, strokeStyle, fillStyle) => {
+    ctx.strokeStyle = strokeStyle;
+    ctx.lineWidth = 2;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    for (let i = 0; i < values.length; i++) {
+      const { x, y } = pointAt(values, i);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
 
-  ctx.strokeStyle = '#00d4ff';
-  ctx.lineWidth = 2;
-  ctx.lineJoin = 'round';
-  ctx.lineCap = 'round';
-  ctx.beginPath();
-  for (let i = 0; i < displayOutput.length; i++) {
-    const x = padding.left + (chartW / (displayOutput.length - 1)) * i;
-    const y = padding.top + chartH - (displayOutput[i] / maxVal * chartH);
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  }
-  ctx.stroke();
+    ctx.fillStyle = fillStyle;
+    ctx.beginPath();
+    ctx.moveTo(padding.left, padding.top + chartH);
+    for (let i = 0; i < values.length; i++) {
+      const { x, y } = pointAt(values, i);
+      ctx.lineTo(x, y);
+    }
+    ctx.lineTo(padding.left + chartW, padding.top + chartH);
+    ctx.closePath();
+    ctx.fill();
+  };
 
-  ctx.fillStyle = 'rgba(0,212,255,.10)';
-  ctx.beginPath();
-  ctx.moveTo(padding.left, padding.top + chartH);
-  for (let i = 0; i < displayOutput.length; i++) {
-    const x = padding.left + (chartW / (displayOutput.length - 1)) * i;
-    const y = padding.top + chartH - (displayOutput[i] / maxVal * chartH);
-    ctx.lineTo(x, y);
-  }
-  ctx.lineTo(padding.left + chartW, padding.top + chartH);
-  ctx.closePath();
-  ctx.fill();
+  drawSeries(displayInput, '#ff4757', 'rgba(255,71,87,.10)');
+  drawSeries(displayOutput, '#00d4ff', 'rgba(0,212,255,.10)');
 
   ctx.fillStyle = '#ff4757';
   ctx.beginPath();
@@ -605,22 +590,9 @@ async function clearLog() {
 
 async function resetCfg() {
   if (!confirm('确定恢复默认配置？')) return;
-  const defaults = {
-    CYCLE_TIME: 1, CURRENT_MAX: 50000000,
-    STEP_CHARGING_DISABLED: 0, STEP_CHARGING_DISABLED_THRESHOLD: 15,
-    TEMP_CTRL: 1, POWER_CTRL: 0,
-    CHARGE_STOP: 95, CHARGE_START: 80, POWER_CTRL_MODE: 0,
-    TEMP_LEVEL1: 45, TEMP_LEVEL1_CURRENT: 3000000,
-    TEMP_LEVEL2: 50, TEMP_LEVEL2_CURRENT: 1000000,
-    TEMP_MAX: 52,
-    TEMP_SIMULATE: 0, TEMP_SIMULATE_MOUNT_MODE: 0, TEMP_SIMULATE_VALUE: 28,
-    THERMAL_MOUNT_MODE: 0,
-    MEIZU_DEVICE: 0, MEIZU_CHARGE_LEVEL: 10, MEIZU_THERMAL_SCHEME: 2,
-    BYPASS_CHARGE: 0
-  };
-  Object.assign(cfg, defaults);
+  Object.assign(cfg, DEFAULT_CFG);
   try {
-    for (const [k, v] of Object.entries(defaults)) {
+    for (const [k, v] of Object.entries(DEFAULT_CFG)) {
       await saveOneCfg(k, v);
     }
     await loadCfg();

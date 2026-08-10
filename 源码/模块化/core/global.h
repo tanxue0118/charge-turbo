@@ -14,6 +14,12 @@
 
 #define MODDIR_PATH "/data/adb/modules/turbo-charge"
 #define STATE_DIR MODDIR_PATH "/state"
+#define MOUNTINFO_PATH "/proc/self/mountinfo"
+#define POWER_SUPPLY_DIR "/sys/class/power_supply"
+#define THERMAL_DIR "/sys/class/thermal"
+#define BATTERY_SUPPLY_DIR POWER_SUPPLY_DIR "/battery"
+#define BATTERY_CAPACITY_PATH BATTERY_SUPPLY_DIR "/capacity"
+#define BATTERY_STATUS_PATH BATTERY_SUPPLY_DIR "/status"
 #define TEMP_NODE_MAX 64
 #define MEIZU_WIRED_LEVEL_PATH "/sys/class/meizu/charger/wired/wired_level"
 #define MEIZU_WIRED_LEVEL_LEGACY_PATH "/sys/class/meizu/charger/wired_level"
@@ -72,6 +78,13 @@ typedef struct {
     int last_mode;
 } MountModeState;
 
+typedef struct {
+    char **max_files;
+    int max_count;
+    char **limit_files;
+    int limit_count;
+} ChargeCurrentNodes;
+
 typedef enum {
     BYPASS_MODE_OFF = 0,
     BYPASS_MODE_HARDWARE,
@@ -121,6 +134,7 @@ extern int foreground_thread_running;
 extern int foreground_thread_stop;
 
 void handle_exit_signal(int sig);
+int clamp_int(int value, int min_value, int max_value);
 int clamp_meizu_charge_level(int level);
 int clamp_meizu_thermal_scheme(int scheme);
 
