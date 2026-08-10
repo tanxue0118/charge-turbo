@@ -1,0 +1,19 @@
+* text=auto
+
+*.sh text eol=lf
+*.c text eol=lf
+*.h text eol=lf
+*.ps1 text eol=crlf
+*.md text eol=lf
+*.txt text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+*.js text eol=lf
+*.prop text eol=lf
+
+*.zip binary
+*.jpeg binary
+*.jpg binary
+*.png binary
+*.so binary
+charge-boost/bin/* binary

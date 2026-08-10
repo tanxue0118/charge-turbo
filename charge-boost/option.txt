@@ -1,0 +1,89 @@
+# 配置更改实时生效
+# CYCLE_TIME 必须大于 0，其他配置必须大于等于 0
+# 所有配置都必须为整数，最大值为 2147483647
+
+# 循环间隔时间，单位：秒
+# 默认 1 秒，不建议大于 5 秒
+CYCLE_TIME=1
+
+# 最大充电电流，单位：μA
+# 经测试超过手机理论最大充电电流一般不会出现问题，所以保持默认即可
+CURRENT_MAX=50000000
+
+# 是否关闭阶梯式充电
+# 1 为关闭，其他数字为不关闭
+STEP_CHARGING_DISABLED=0
+
+# 是否启用温度控制
+# 1 为启用，其他数字为禁用
+TEMP_CTRL=1
+
+# 是否启用电量控制
+# 1 为启用，其他数字为禁用
+POWER_CTRL=0
+
+# 关闭阶梯式充电的电量阈值
+# 电量大于等于此值时关闭阶梯式充电
+STEP_CHARGING_DISABLED_THRESHOLD=15
+
+# 停止充电的电量阈值
+# POWER_CTRL=1 时生效
+CHARGE_STOP=95
+
+# 恢复充电的电量阈值
+# POWER_CTRL=1 时生效
+CHARGE_START=80
+
+# 电量控制模式
+# 0 为停止充电，1 为进入旁路供电（优先硬件旁路，不支持时使用 500mA 兼容模式）
+POWER_CTRL_MODE=0
+
+# 第一档温控阈值，单位：℃（轻度限流）
+TEMP_LEVEL1=45
+
+# 第一档限流电流，单位：μA
+TEMP_LEVEL1_CURRENT=3000000
+
+# 第二档温控阈值，单位：℃（重度限流）
+TEMP_LEVEL2=50
+
+# 第二档限流电流，单位：μA
+TEMP_LEVEL2_CURRENT=1000000
+
+# 第三档温控阈值，单位：℃（高温停充）
+TEMP_MAX=52
+
+# 是否启用电池温度模拟功能
+# 1 为启用，其他数字为禁用
+TEMP_SIMULATE=0
+
+# 温度模拟生效模式
+# 0 为全局模拟（无论是否充电都模拟），1 为仅充电时模拟
+TEMP_SIMULATE_MOUNT_MODE=0
+
+# 模拟的电池温度，单位：℃
+# TEMP_SIMULATE=1 时生效
+TEMP_SIMULATE_VALUE=28
+
+# 温控移除挂载模式
+# 0 为全局挂载，1 为仅充电时挂载
+THERMAL_MOUNT_MODE=0
+
+# 是否启用魅族适配
+# 1 为启用，其他数字为禁用
+# 开启后会使用魅族 thermal-engine-v2，并按下方档位写入 wired_level
+MEIZU_DEVICE=0
+
+# 魅族充电档位，范围 1-10
+# 已知：2 为车载模式，3 为游戏涓流模式，10 为正常充电模式
+MEIZU_CHARGE_LEVEL=10
+
+# 魅族温控移除方案，仅在 MEIZU_DEVICE=1 时生效
+# 1=Flyme清空，2=extremegt放宽
+MEIZU_THERMAL_SCHEME=2
+
+# 是否启用应用旁路供电功能
+# 1 为启用，其他数字为禁用
+# 开启后请配置 /data/adb/modules/turbo-charge/bypass_charge.txt
+# 程序会优先启用可验证的硬件旁路，不支持时自动使用 500mA 兼容模式
+BYPASS_CHARGE=0

@@ -1,0 +1,24 @@
+# Local build outputs
+/build/
+
+# Archived originals, references, and release packages
+/原件/
+/参考资料/
+/发布包/
+/*.zip
+
+# Local assistant/editor state
+/.claude/
+/Claude.md
+
+# Runtime logs and temporary files
+*.log
+*.tmp
+*.new
+*.download
+
+# OS/editor metadata
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
