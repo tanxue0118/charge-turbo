@@ -6,16 +6,60 @@
 #include "read_option_file.h"
 #include "thermal_mount.h"
 
+#include <dirent.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #define THERMAL_MOUNT_MAX 1024
 #define THERMAL_FILES_DIR "/data/adb/modules/turbo-charge/thermal_files"
 
 static char *mounted_thermal_paths[THERMAL_MOUNT_MAX] = {0};
 static int mounted_thermal_count = 0;
+
+static int collect_files(const char *path, char ***list, int *count, int *cap)
+{
+    DIR *dir = opendir(path);
+    if (!dir) return 0;
+
+    struct dirent *ent;
+
+    while ((ent = readdir(dir)) != NULL) {
+        if (!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, "..")) continue;
+
+        char child[PATH_MAX] = {0};
+        if (snprintf(child, sizeof(child), "%s/%s", path, ent->d_name) >= (int)sizeof(child)) {
+            continue;
+        }
+
+        struct stat st;
+        if (lstat(child, &st) != 0) continue;
+
+        if (S_ISDIR(st.st_mode)) {
+            collect_files(child, list, count, cap);
+            continue;
+        }
+
+        if (!S_ISREG(st.st_mode)) continue;
+
+        if (*count >= *cap) {
+            int new_cap = *cap * 2;
+            char **tmp = realloc(*list, sizeof(char *) * new_cap);
+            if (!tmp) break;
+            *list = tmp;
+            *cap = new_cap;
+        }
+
+        (*list)[*count] = strdup(child);
+        if (!(*list)[*count]) break;
+        (*count)++;
+    }
+
+    closedir(dir);
+    return 1;
+}
 
 static int list_dir_recursive(const char *path, char ***out)
 {
@@ -27,36 +71,7 @@ static int list_dir_recursive(const char *path, char ***out)
     char **list = calloc(cap, sizeof(char *));
     if (!list) return 0;
 
-    char cmd[PATH_MAX + 32] = {0};
-    snprintf(cmd, sizeof(cmd), "find '%s' -type f", path);
-
-    FILE *fp = popen(cmd, "r");
-    if (!fp) {
-        free(list);
-        return 0;
-    }
-
-    char line[PATH_MAX];
-    while (fgets(line, sizeof(line), fp)) {
-        size_t len = strlen(line);
-        while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r')) {
-            line[--len] = '\0';
-        }
-        if (len == 0) continue;
-
-        if (count >= cap) {
-            cap *= 2;
-            char **tmp = realloc(list, sizeof(char *) * cap);
-            if (!tmp) break;
-            list = tmp;
-        }
-
-        list[count] = strdup(line);
-        if (!list[count]) break;
-        count++;
-    }
-
-    pclose(fp);
+    collect_files(path, &list, &count, &cap);
 
     if (count == 0) {
         free(list);

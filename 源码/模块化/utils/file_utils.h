@@ -10,7 +10,6 @@ int ensure_readable(const char *file);
 int read_file(const char *file_path, char *buf, size_t buf_size);
 void ensure_dir(const char *dir);
 void resolve_mount_target(const char *path, char *out, size_t out_size);
-int run_shell_command(const char *cmd);
 void free_string_array(char ***arr, int num);
 int list_dir(const char *path, char ***out);
 int parse_non_negative_int(const char *str, int *out);

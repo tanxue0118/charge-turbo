@@ -132,7 +132,7 @@ void sync_meizu_wired_level(int is_charging, MeizuWiredLevelState *state)
                      raw_level, level, MEIZU_WIRED_LEVEL_PATHS_TEXT);
     int found_nodes = 0;
     int success_nodes = 0;
-    int ret = write_meizu_wired_level_with_echo(level, &found_nodes, &success_nodes);
+    int ret = write_meizu_wired_level(level, &found_nodes, &success_nodes);
 
     if (ret == MEIZU_LEVEL_NODE_MISSING) {
         printf_with_time("Meizu wired_level nodes missing, paths=%s,%s",

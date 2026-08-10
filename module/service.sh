@@ -31,7 +31,7 @@ echo "" >> "${LOG_FILE}"
 
 # 小米云控处理
 if [ -e /data/vendor/thermal ]; then
-    chattr -i $(find /data/vendor/thermal) 2>/dev/null
+    find /data/vendor/thermal -exec chattr -i {} + 2>/dev/null
     rm -rf /data/vendor/thermal
     mkdir -p /data/vendor/thermal/config
     chattr +i /data/vendor/thermal/config /data/vendor/thermal 2>/dev/null
@@ -51,7 +51,9 @@ chmod 755 "${MODDIR}/bin/turbo-charge"
 # 清理旧进程后单进程启动，避免多个守护进程同时写充电节点
 old_process=$(ps -eo comm,pid | awk '$1=="turbo-charge"{print $2}')
 if [ -n "${old_process}" ]; then
-    kill ${old_process} 2>/dev/null
+    for pid in ${old_process}; do
+        kill "${pid}" 2>/dev/null
+    done
     sleep 1
     echo "已清理旧 turbo-charge 进程：${old_process}" >> "${LOG_FILE}"
 fi
