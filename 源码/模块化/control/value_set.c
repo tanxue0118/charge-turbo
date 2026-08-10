@@ -5,10 +5,14 @@
 #include "printf_with_time.h"
 #include "value_set.h"
 
+#include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
+
 void set_value(const char *file, const char *value)
 {
     if (!file || !value) return;
@@ -52,33 +56,41 @@ void set_array_value(char **files, int num, const char *value)
     }
 }
 
-static int write_meizu_wired_level_node_with_echo(const char *path, int level)
+#define MEIZU_WIRED_LEVEL_MODE_UNLOCKED 0644
+#define MEIZU_WIRED_LEVEL_MODE_LOCKED 0444
+
+static int write_meizu_wired_level_node(const char *path, int level)
 {
     if (!path) return -1;
 
-    char cmd[PATH_MAX * 3 + 96] = {0};
-    snprintf(cmd, sizeof(cmd), "chmod 777 %s 2>/dev/null", path);
-    int ret = run_shell_command(cmd);
-    if (ret != 0) {
-        printf_with_time("Meizu wired_level chmod-before-write failed, path=%s, level=%d, ret=%d",
-                         path, level, ret);
-        return ret;
+    if (chmod(path, MEIZU_WIRED_LEVEL_MODE_UNLOCKED) != 0) {
+        printf_with_time("Meizu wired_level chmod-before-write failed, path=%s, level=%d, errno=%s",
+                         path, level, strerror(errno));
     }
 
-    snprintf(cmd, sizeof(cmd), "echo %d > %s", level, path);
-    ret = run_shell_command(cmd);
-    if (ret != 0) {
-        printf_with_time("Meizu wired_level echo failed, path=%s, level=%d, ret=%d",
-                         path, level, ret);
-        return ret;
+    char value[16] = {0};
+    int len = snprintf(value, sizeof(value), "%d", level);
+
+    int fd = open(path, O_WRONLY | O_CLOEXEC);
+    if (fd < 0) {
+        printf_with_time("Meizu wired_level open failed, path=%s, level=%d, errno=%s",
+                         path, level, strerror(errno));
+        return MEIZU_LEVEL_WRITE_FAILED;
     }
 
-    snprintf(cmd, sizeof(cmd), "chmod -w %s 2>/dev/null", path);
-    ret = run_shell_command(cmd);
-    if (ret != 0) {
-        printf_with_time("Meizu wired_level chmod-lock failed, path=%s, level=%d, ret=%d",
-                         path, level, ret);
-        return ret;
+    ssize_t written = write(fd, value, (size_t)len);
+    close(fd);
+
+    if (written != (ssize_t)len) {
+        printf_with_time("Meizu wired_level write failed, path=%s, level=%d, errno=%s",
+                         path, level, strerror(errno));
+        return MEIZU_LEVEL_WRITE_FAILED;
+    }
+
+    if (chmod(path, MEIZU_WIRED_LEVEL_MODE_LOCKED) != 0) {
+        printf_with_time("Meizu wired_level chmod-lock failed, path=%s, level=%d, errno=%s",
+                         path, level, strerror(errno));
+        return MEIZU_LEVEL_WRITE_FAILED;
     }
 
     return 0;
@@ -88,10 +100,9 @@ static int restore_meizu_wired_level_node_permission(const char *path)
 {
     if (!path) return -1;
 
-    char cmd[PATH_MAX + 32] = {0};
-    snprintf(cmd, sizeof(cmd), "chmod 777 %s 2>/dev/null", path);
+    if (chmod(path, MEIZU_WIRED_LEVEL_MODE_UNLOCKED) != 0) return -1;
 
-    return run_shell_command(cmd);
+    return 0;
 }
 
 static const char *meizu_wired_level_paths[] = {
@@ -99,9 +110,9 @@ static const char *meizu_wired_level_paths[] = {
     MEIZU_WIRED_LEVEL_LEGACY_PATH
 };
 
-int write_meizu_wired_level_with_echo(int level,
-                                             int *found_count,
-                                             int *success_count)
+int write_meizu_wired_level(int level,
+                            int *found_count,
+                            int *success_count)
 {
     level = clamp_meizu_charge_level(level);
 
@@ -115,9 +126,9 @@ int write_meizu_wired_level_with_echo(int level,
         if (!file_exists(path)) continue;
 
         found++;
-        printf_with_time("Meizu wired_level node found, path=%s, level=%d, method=chmod777-echo-chmod-w",
+        printf_with_time("Meizu wired_level node found, path=%s, level=%d, method=chmod0644-write-chmod0444",
                          path, level);
-        int ret = write_meizu_wired_level_node_with_echo(path, level);
+        int ret = write_meizu_wired_level_node(path, level);
         if (ret == 0) {
             success++;
             printf_with_time("Meizu wired_level write success, path=%s, level=%d", path, level);
@@ -158,14 +169,14 @@ int restore_meizu_wired_level_permission(void)
         int ret = restore_meizu_wired_level_node_permission(path);
         if (ret != 0) {
             failed++;
-            printf_with_time("Meizu wired_level chmod 777 failed, path=%s, ret=%d", path, ret);
+            printf_with_time("Meizu wired_level chmod 0644 failed, path=%s, ret=%d", path, ret);
         } else {
-            printf_with_time("Meizu wired_level chmod 777 success, path=%s", path);
+            printf_with_time("Meizu wired_level chmod 0644 success, path=%s", path);
         }
     }
 
     if (found == 0) {
-        printf_with_time("Meizu wired_level chmod 777 skipped, nodes missing, paths=%s",
+        printf_with_time("Meizu wired_level chmod 0644 skipped, nodes missing, paths=%s",
                          MEIZU_WIRED_LEVEL_PATHS_TEXT);
         return MEIZU_LEVEL_NODE_MISSING;
     }

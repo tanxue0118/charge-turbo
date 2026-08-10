@@ -61,6 +61,15 @@ function toast(msg) {
   el._timer = setTimeout(() => el.classList.remove('show'), 1800);
 }
 
+function escapeHtml(text) {
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function renderIcons() {
   if (window.lucide && window.lucide.createIcons) {
     window.lucide.createIcons();
@@ -231,14 +240,18 @@ async function init() {
     if (el.type === 'range') return;
     if (cfgMap[el.id]) {
       const { key, mul } = cfgMap[el.id];
-      cfg[key] = parseInt(el.value) * (mul || 1);
+      const parsed = parseInt(el.value, 10);
+      if (!Number.isFinite(parsed)) return;
+      cfg[key] = parsed * (mul || 1);
       saveOneCfg(key, cfg[key]);
     }
   });
   document.getElementById('page-config').addEventListener('change', e => {
     const el = e.target;
     if (el.matches('select') && selMap[el.id]) {
-      cfg[selMap[el.id]] = parseInt(el.value);
+      const parsed = parseInt(el.value, 10);
+      if (!Number.isFinite(parsed)) return;
+      cfg[selMap[el.id]] = parsed;
       saveOneCfg(selMap[el.id], cfg[selMap[el.id]]);
     } else if (el.id === 'sw-dual-cell') {
       toggleDualCell();
@@ -546,6 +559,11 @@ function drawChart() {
 }
 
 async function saveOneCfg(key, value) {
+  if (!/^[A-Z0-9_]+$/.test(key)) return;
+  if (!Number.isSafeInteger(value) || value < 0 || value > 2147483647) {
+    toast('数值非法，未保存');
+    return;
+  }
   const text = await readFile(CONFIG);
   const lines = text.split('\n');
   let found = false;
@@ -581,8 +599,9 @@ async function refreshLog() {
         if (x.includes('失效') || x.includes('错误') || x.includes('失败')) cls = 'e';
         else if (x.includes('警告') || x.includes('限制')) cls = 'w';
         else if (x.includes('启动') || x.includes('检测') || x.includes('找到')) cls = 'i';
-        x = x.replace(/(\d{4}\.\d{2}\.\d{2}T\d{2}:\d{2}:\d{2})/, '<span class="t">$1</span>');
-        return `<div class="${cls}">${x}</div>`;
+        const safe = escapeHtml(x)
+          .replace(/(\d{4}\.\d{2}\.\d{2}T\d{2}:\d{2}:\d{2})/, '<span class="t">$1</span>');
+        return `<div class="${cls}">${safe}</div>`;
       }).join('');
       box.scrollTop = box.scrollHeight;
     } else {

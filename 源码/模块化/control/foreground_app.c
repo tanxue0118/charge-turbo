@@ -24,10 +24,13 @@ static void log_foreground_error_once(int *last_error, int code, const char *msg
     }
 }
 
+#define GETPROP_BIN "/system/bin/getprop"
+#define DUMPSYS_BIN "/system/bin/dumpsys"
+
 int check_android_version(void)
 {
     char version[32] = {0};
-    FILE *fp = popen("getprop ro.build.version.release", "r");
+    FILE *fp = popen(GETPROP_BIN " ro.build.version.release", "r");
 
     if (!fp) {
         printf_with_time("无法获取安卓版本，应用旁路供电功能失效");
@@ -225,6 +228,39 @@ static int read_foreground_from_cpuset(char **bypass_apps, int bypass_app_num,
     return 0;
 }
 
+#define SCREEN_STATE_UNAVAILABLE (-2)
+#define SCREEN_STATE_UNKNOWN (-1)
+#define SCREEN_STATE_OFF 0
+#define SCREEN_STATE_ON 1
+
+static int read_screen_on_state(void)
+{
+    FILE *fp = popen(DUMPSYS_BIN " deviceidle", "r");
+    if (!fp) return SCREEN_STATE_UNAVAILABLE;
+
+    char line[256] = {0};
+    int state = SCREEN_STATE_UNKNOWN;
+
+    while (fgets(line, sizeof(line), fp)) {
+        line_feed(line);
+
+        char *field = strstr(line, "mScreenOn");
+        if (!field) continue;
+
+        char *eq = strchr(field, '=');
+        if (!eq) continue;
+
+        char *value = eq + 1;
+        while (*value == ' ' || *value == '\t') value++;
+
+        state = strncmp(value, "true", 4) == 0 ? SCREEN_STATE_ON : SCREEN_STATE_OFF;
+        break;
+    }
+
+    pclose(fp);
+    return state;
+}
+
 static void *foreground_thread_func(void *arg)
 {
     free(arg);
@@ -235,28 +271,21 @@ static void *foreground_thread_func(void *arg)
     time_t bypass_file_last_mtime = 0;
 
     while (!should_stop_foreground_thread() && read_one_option("BYPASS_CHARGE") == 1) {
-        char result[256] = {0};
-        FILE *fp = popen("dumpsys deviceidle | grep 'mScreenOn'", "r");
+        int screen_on = read_screen_on_state();
 
-        if (!fp) {
+        if (screen_on == SCREEN_STATE_UNAVAILABLE) {
             log_foreground_error_once(&last_error, 1, "无法执行 dumpsys deviceidle");
             sleep(FOREGROUND_POLL_SECONDS);
             continue;
         }
 
-        fgets(result, sizeof(result), fp);
-        pclose(fp);
-        line_feed(result);
-
-        char *eq = strchr(result, '=');
-
-        if (!eq) {
+        if (screen_on == SCREEN_STATE_UNKNOWN) {
             log_foreground_error_once(&last_error, 2, "无法获取屏幕状态");
             sleep(FOREGROUND_POLL_SECONDS);
             continue;
         }
 
-        if (strcmp(eq + 1, "true") != 0) {
+        if (screen_on == SCREEN_STATE_OFF) {
             set_foreground_app("screen_is_off");
             sleep(FOREGROUND_POLL_SECONDS);
             continue;
@@ -332,6 +361,34 @@ void stop_foreground_thread(void)
     pthread_mutex_unlock(&mutex_thread);
 }
 
+static int is_valid_package_name(const char *name)
+{
+    if (!name || !*name) return 0;
+
+    int has_dot = 0;
+    int segment_len = 0;
+
+    for (const char *p = name; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+
+        if (c == '.') {
+            if (segment_len == 0) return 0;
+            has_dot = 1;
+            segment_len = 0;
+            continue;
+        }
+
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') || c == '_')) {
+            return 0;
+        }
+
+        segment_len++;
+    }
+
+    return has_dot && segment_len > 0;
+}
+
 int load_bypass_app_list(char ***apps, int *app_num, time_t *last_mtime)
 {
     struct stat st;
@@ -372,6 +429,16 @@ int load_bypass_app_list(char ***apps, int *app_num, time_t *last_mtime)
         while (*p == ' ' || *p == '\t') p++;
 
         if (*p == '\0' || *p == '#') continue;
+
+        size_t len = strlen(p);
+        while (len > 0 && (p[len - 1] == ' ' || p[len - 1] == '\t')) {
+            p[--len] = '\0';
+        }
+
+        if (!is_valid_package_name(p)) {
+            printf_with_time("旁路供电应用列表存在非法包名，已忽略该行");
+            continue;
+        }
 
         if (count >= cap) {
             cap *= 2;

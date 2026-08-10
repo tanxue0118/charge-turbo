@@ -159,7 +159,12 @@ merge_old_option()
 
         [[ -z "${KEY}" ]] && continue
 
-        if ! grep -qx "${KEY}" "${NEW_KEYS_FILE}"; then
+        if [[ -z "$(echo "${KEY}" | grep '^[A-Z0-9_][A-Z0-9_]*$')" ]]; then
+            ui_print "  - 旧配置项名非法，已忽略"
+            continue
+        fi
+
+        if ! grep -qxF "${KEY}" "${NEW_KEYS_FILE}"; then
             ui_print "  - ${KEY} 已不在新配置中，删除旧值"
             continue
         fi
@@ -183,7 +188,7 @@ merge_old_option()
     while IFS= read -r KEY || [[ -n "${KEY}" ]]; do
         [[ -z "${KEY}" ]] && continue
 
-        if grep -qx "${KEY}" "${OLD_KEYS_FILE}"; then
+        if grep -qxF "${KEY}" "${OLD_KEYS_FILE}"; then
             continue
         fi
 

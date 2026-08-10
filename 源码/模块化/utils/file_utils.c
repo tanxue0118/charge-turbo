@@ -13,7 +13,6 @@
 #include <string.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
-#include <sys/wait.h>
 #include <unistd.h>
 void line_feed(char *line)
 {
@@ -89,18 +88,6 @@ void resolve_mount_target(const char *path, char *out, size_t out_size)
     } else {
         snprintf(out, out_size, "%s", path);
     }
-}
-
-int run_shell_command(const char *cmd)
-{
-    if (!cmd || !cmd[0]) return -1;
-
-    int status = system(cmd);
-    if (status == -1) return -1;
-    if (WIFEXITED(status)) return WEXITSTATUS(status);
-    if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
-
-    return status;
 }
 
 void free_string_array(char ***arr, int num)
