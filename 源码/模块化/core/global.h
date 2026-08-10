@@ -64,6 +64,7 @@ typedef struct {
     int discovered;
     int last_value;
     int last_simulating;
+    int last_sim_all_failed;
 } TempSimState;
 
 typedef struct {

@@ -6,6 +6,7 @@
 #include "printf_with_time.h"
 #include "read_option_file.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <stdint.h>
@@ -40,7 +41,13 @@ int check_android_version(void)
         return 0;
     }
 
-    pclose(fp);
+    int getprop_status = pclose(fp);
+
+    if (getprop_status != 0) {
+        printf_with_time("getprop 异常退出（返回码=%d），应用旁路供电功能失效", getprop_status);
+        return 0;
+    }
+
     line_feed(version);
 
     int android_version = atoi(version);
@@ -244,8 +251,16 @@ static void *foreground_thread_func(void *arg)
             continue;
         }
 
-        fgets(result, sizeof(result), fp);
-        pclose(fp);
+        int read_ok = fgets(result, sizeof(result), fp) != NULL;
+        int dumpsys_status = pclose(fp);
+
+        if (!read_ok || dumpsys_status != 0) {
+            log_foreground_error_once(&last_error, 4,
+                                      "dumpsys deviceidle 没有返回屏幕状态，无法判断前台应用");
+            sleep(FOREGROUND_POLL_SECONDS);
+            continue;
+        }
+
         line_feed(result);
 
         char *eq = strchr(result, '=');
@@ -262,7 +277,10 @@ static void *foreground_thread_func(void *arg)
             continue;
         }
 
-        load_bypass_app_list(&bypass_apps, &bypass_app_num, &bypass_file_last_mtime);
+        if (!load_bypass_app_list(&bypass_apps, &bypass_app_num, &bypass_file_last_mtime)) {
+            log_foreground_error_once(&last_error, 5,
+                                      "旁路供电应用列表读取失败，本次只上报前台应用名");
+        }
 
         char pkg[APP_PACKAGE_NAME_MAX_SIZE] = {0};
         int r = read_foreground_from_cpuset(bypass_apps, bypass_app_num, pkg, sizeof(pkg));
@@ -337,8 +355,11 @@ int load_bypass_app_list(char ***apps, int *app_num, time_t *last_mtime)
     struct stat st;
 
     if (stat(bypass_charge_file, &st) != 0) {
+        log_io_failure("读取旁路供电应用列表", bypass_charge_file, errno);
         return 0;
     }
+
+    clear_io_failure("读取旁路供电应用列表", bypass_charge_file);
 
     if (*apps && st.st_mtime == *last_mtime) {
         return 1;
@@ -352,13 +373,19 @@ int load_bypass_app_list(char ***apps, int *app_num, time_t *last_mtime)
     *last_mtime = st.st_mtime;
 
     FILE *fp = fopen(bypass_charge_file, "r");
-    if (!fp) return 0;
+    if (!fp) {
+        log_io_failure("打开旁路供电应用列表", bypass_charge_file, errno);
+        return 0;
+    }
+
+    clear_io_failure("打开旁路供电应用列表", bypass_charge_file);
 
     char line[APP_PACKAGE_NAME_MAX_SIZE] = {0};
     int cap = 8;
     char **list = calloc(cap, sizeof(char *));
 
     if (!list) {
+        printf_with_time("内存不足，无法读取旁路供电应用列表");
         fclose(fp);
         return 0;
     }
@@ -374,14 +401,21 @@ int load_bypass_app_list(char ***apps, int *app_num, time_t *last_mtime)
         if (*p == '\0' || *p == '#') continue;
 
         if (count >= cap) {
-            cap *= 2;
-            char **tmp = realloc(list, sizeof(char *) * cap);
-            if (!tmp) break;
+            int new_cap = cap * 2;
+            char **tmp = realloc(list, sizeof(char *) * new_cap);
+            if (!tmp) {
+                printf_with_time("内存不足，旁路供电应用列表只读取了 %d 项", count);
+                break;
+            }
             list = tmp;
+            cap = new_cap;
         }
 
         list[count] = calloc(1, APP_PACKAGE_NAME_MAX_SIZE);
-        if (!list[count]) break;
+        if (!list[count]) {
+            printf_with_time("内存不足，旁路供电应用列表只读取了 %d 项", count);
+            break;
+        }
 
         snprintf(list[count], APP_PACKAGE_NAME_MAX_SIZE, "%s", p);
         count++;

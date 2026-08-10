@@ -6,6 +6,7 @@
 #include "read_option_file.h"
 #include "thermal_mount.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,13 +26,17 @@ static int list_dir_recursive(const char *path, char ***out)
     int count = 0;
     int cap = 64;
     char **list = calloc(cap, sizeof(char *));
-    if (!list) return 0;
+    if (!list) {
+        printf_with_time("内存不足，无法扫描温控目录：%s", path);
+        return 0;
+    }
 
     char cmd[PATH_MAX + 32] = {0};
     snprintf(cmd, sizeof(cmd), "find '%s' -type f", path);
 
     FILE *fp = popen(cmd, "r");
     if (!fp) {
+        printf_with_time("无法执行 find 扫描温控目录：%s，原因：%s", path, strerror(errno));
         free(list);
         return 0;
     }
@@ -45,18 +50,30 @@ static int list_dir_recursive(const char *path, char ***out)
         if (len == 0) continue;
 
         if (count >= cap) {
-            cap *= 2;
-            char **tmp = realloc(list, sizeof(char *) * cap);
-            if (!tmp) break;
+            int new_cap = cap * 2;
+            char **tmp = realloc(list, sizeof(char *) * new_cap);
+            if (!tmp) {
+                printf_with_time("内存不足，温控文件列表停在 %d 项", count);
+                break;
+            }
             list = tmp;
+            cap = new_cap;
         }
 
         list[count] = strdup(line);
-        if (!list[count]) break;
+        if (!list[count]) {
+            printf_with_time("内存不足，温控文件列表停在 %d 项", count);
+            break;
+        }
         count++;
     }
 
-    pclose(fp);
+    int find_status = pclose(fp);
+
+    if (find_status != 0) {
+        printf_with_time("find 扫描温控目录异常退出：%s，返回码=%d，已读取 %d 项",
+                         path, find_status, count);
+    }
 
     if (count == 0) {
         free(list);
@@ -162,7 +179,17 @@ void mount_thermal_files(void)
     ensure_dir(STATE_DIR);
 
     int fd = open(empty_file, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
-    if (fd >= 0) close(fd);
+    if (fd < 0) {
+        printf_with_time("无法创建空文件：%s，原因：%s，跳过温控挂载",
+                         empty_file, strerror(errno));
+        return;
+    }
+
+    if (close(fd) != 0) {
+        printf_with_time("空文件写入未完成：%s，原因：%s，跳过温控挂载",
+                         empty_file, strerror(errno));
+        return;
+    }
 
     if (!file_exists(empty_file)) {
         printf_with_time("无法创建空文件：%s，跳过温控挂载", empty_file);
@@ -218,7 +245,17 @@ void mount_thermal_files(void)
         printf_with_time("准备挂载温控文件，目标=%s，源=%s", sys_path, source_file);
 
         if (bind_mount_file(source_file, sys_path)) {
-            mounted_thermal_paths[mounted_thermal_count] = strdup(sys_path);
+            char *recorded = strdup(sys_path);
+
+            if (!recorded) {
+                /* 无法记录挂载点就无法在退出时卸载，因此立即回退。 */
+                printf_with_time("内存不足，无法记录挂载点，已回退本次挂载：%s", sys_path);
+                unbind_mount_file(sys_path);
+                failed++;
+                continue;
+            }
+
+            mounted_thermal_paths[mounted_thermal_count] = recorded;
             mounted_thermal_count++;
             mounted++;
             if (meizu_device)
@@ -251,18 +288,25 @@ void umount_thermal_files(void)
     printf_with_time("开始卸载温控挂载");
 
     int unmounted = 0;
+    int failed = 0;
 
     for (int i = 0; i < mounted_thermal_count; i++) {
         if (mounted_thermal_paths[i]) {
-            if (unbind_mount_file(mounted_thermal_paths[i])) {
-                unmounted++;
-            }
+            int result = unbind_mount_file(mounted_thermal_paths[i]);
+
+            if (result > 0) unmounted++;
+            else if (result < 0) failed++;
+
             free(mounted_thermal_paths[i]);
             mounted_thermal_paths[i] = NULL;
         }
     }
 
     mounted_thermal_count = 0;
+
+    if (failed > 0) {
+        printf_with_time("有 %d 个温控挂载点未能卸载，可能需要重启才能恢复系统温控", failed);
+    }
 
     char empty_file[PATH_MAX] = {0};
     snprintf(empty_file, sizeof(empty_file), "%s/.empty", STATE_DIR);
