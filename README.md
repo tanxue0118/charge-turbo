@@ -1,265 +1,180 @@
-# Charge Turbo（充电优化）
+# 充电优化模块（Charge Turbo）
 
-一个面向 Android Root 设备的充电控制与温控管理模块，模块 ID 为 `turbo-charge`。本项目并非从零编写，而是在原项目基础上持续二次开发，现已扩展温控配置挂载、三档温度控制、魅族适配、WebUI、电量停止充电和旁路供电等功能。
+面向 Android Root 设备的充电控制与温控管理模块，模块 ID 为 `turbo-charge`。本仓库在原项目基础上持续维护，增加了三档温度控制、电量停止充电、旁路供电、魅族适配、温控路径扩展和 WebUI 等功能。
 
 > [!CAUTION]
-> 本项目会修改 `/sys` 充电节点、停止或绕过部分系统温控策略，并可能让设备以高于原厂策略的功率运行。错误配置可能导致设备过热、电池寿命下降、充电异常、重启或硬件损坏。请先确认设备节点含义，保留可用的恢复方式，并自行承担使用风险。
+> 本模块会修改 `/sys` 充电节点，并可能停止或绕过部分系统温控策略。错误配置可能造成设备过热、电池寿命下降、充电异常、重启或硬件损坏。请先准备可用的恢复方式，并自行承担使用风险。
 
 ## 项目来源与署名
 
 本项目保留并感谢以下上游工作：
 
-- [chase535/turbo-charge](https://github.com/chase535/turbo-charge)：本项目的原始基础仓库，原作者为酷安 **@诺鸡鸭**。
-- 酷安 **@御坂Thepoor**：温控移除方案以及相关检测、挂载思路。
-- [@tanxue0118](https://github.com/tanxue0118) / 一只做梦的猫：当前仓库的整理、维护与二次开发。
+- [chase535/turbo-charge](https://github.com/chase535/turbo-charge)：原始基础项目，原作者为酷安 **@诺鸡鸭**。
+- 酷安 **@御坂Thepoor**：温控移除方案及相关检测、挂载思路。
+- [@tanxue0118](https://github.com/tanxue0118) / **一只做梦的猫**：当前仓库维护与二次开发。
 
-本仓库不是对上述工作的重新署名。引用、修改或分发本项目时，请保留上游来源、原作者、贡献者说明以及 AGPL-3.0 协议声明。
-
-> [!IMPORTANT]
-> 当前 `charge-boost/bin/turbo-charge` 已由 `源码/模块化` 重新编译，包含硬件旁路探测、500 mA 兼容模式和新增温控路径。源码与预编译二进制已经同步，但硬件旁路及设备节点恢复行为仍需根据具体机型、内核和充电驱动进行真机验证。
+引用、修改或分发本项目时，请保留上游来源、作者及贡献者说明，并遵守 AGPL-3.0-only 协议。
 
 ## 主要功能
 
-### 充电控制
+### 充电与电量控制
 
-- 扫描并写入设备可用的充电电流节点。
-- 可设置最大充电电流 `CURRENT_MAX`。
-- 可按电量阈值关闭阶梯式充电。
+- 自动扫描设备可写的充电电流、暂停充电和阶梯充电节点。
+- 可设置最大充电电流，并可选择是否关闭阶梯式充电。
 - 配置文件通过 inotify 监听，修改后可在运行中重新加载。
-- 电量阈值采用回差控制：达到 `CHARGE_STOP` 后触发，降到 `CHARGE_START` 后恢复，避免在单一阈值附近反复切换。
+- 电量控制采用回差逻辑：达到 `CHARGE_STOP` 后触发，降低到 `CHARGE_START` 后恢复，避免在单一阈值附近频繁切换。
+- 达到目标电量后可选择停止充电，或请求旁路供电。
 
-### 电量停止充电与旁路供电
+### 旁路供电
 
-电量控制支持两种模式：
+旁路供电支持电量阈值触发和前台应用触发：
 
-- `POWER_CTRL_MODE=0`：达到目标电量后停止充电。
-- `POWER_CTRL_MODE=1`：达到目标电量后请求旁路供电。
+1. 优先探测标准 `power_supply` 接口及名称中明确包含 `bypass` 的专用节点。
+2. 写入硬件旁路值后重新读取，确认节点是否真正生效。
+3. 启用前保存节点原值，退出旁路、拔掉电源或进程结束时尝试恢复。
+4. 设备没有可验证的硬件旁路节点时，如存在电流控制节点，则使用 `500000 μA`（500 mA）兼容模式。
+5. 硬件旁路和兼容模式都不可用时写入日志，并在后续循环中重新探测。
 
-旁路供电的执行顺序：
+500 mA 兼容模式只是低电流供电方案，不等同于真正的硬件旁路。是否能由充电器直接承担系统负载，取决于设备内核、充电 IC 和厂商驱动实现。
 
-1. 探测标准 `power_supply` 旁路接口及名称明确包含 `bypass` 的专用节点。
-2. 写入硬件旁路值，并重新读取节点确认是否真正生效。
-3. 保存启用前的原值，退出旁路时恢复。
-4. 如果设备没有可验证的硬件旁路节点，但存在电流控制节点，则进入 `500000 μA`（500 mA）兼容模式。
-5. 如果硬件旁路和电流兼容模式均不可用，则记录日志并定期重新探测。
-
-说明：500 mA 兼容模式只是低电流供电方案，**不等同于真正的硬件旁路**。是否能够实现由充电器直接承担系统负载，取决于设备内核、充电 IC 和厂商节点实现。
-
-### 前台应用旁路
-
-启用 `BYPASS_CHARGE=1` 后，可在 `bypass_charge.txt` 中按行填写应用包名。目标应用位于前台且屏幕点亮时请求旁路；离开应用、熄屏、拔掉外部电源、关闭功能或进程退出时恢复原状态。
-
-电量控制和前台应用可以共同请求旁路，停止充电请求的优先级高于应用旁路请求。
+启用 `BYPASS_CHARGE=1` 后，可在 `bypass_charge.txt` 中按行填写应用包名。目标应用位于前台且屏幕点亮时请求旁路；离开应用、熄屏、拔掉电源或关闭功能时恢复原状态。
 
 ### 三档温度控制
 
-- 第一档：达到 `TEMP_LEVEL1` 后使用 `TEMP_LEVEL1_CURRENT` 轻度限流。
-- 第二档：达到 `TEMP_LEVEL2` 后使用 `TEMP_LEVEL2_CURRENT` 进一步限流。
-- 第三档：达到 `TEMP_MAX` 后停止充电。
-- 温度下降后，根据当前温度自动回到正常充电、第一档或第二档。
-- 可单独关闭温度控制，也可开启电池温度模拟进行调试。
+- 第一档达到 `TEMP_LEVEL1` 后使用 `TEMP_LEVEL1_CURRENT` 轻度限流。
+- 第二档达到 `TEMP_LEVEL2` 后使用 `TEMP_LEVEL2_CURRENT` 进一步限流。
+- 第三档达到 `TEMP_MAX` 后停止充电。
+- 温度下降后按控制状态恢复，避免单一高温阈值造成频繁切换。
 
-### 温控配置挂载
+### 温控路径挂载
 
-- 使用零字节占位文件配合 bind mount 覆盖系统温控配置。
-- 当前 `charge-boost/thermal_files` 包含 487 个温控路径。
-- 覆盖 `system`、`system_ext` 和 `product` 等目录。
-- 安装时可扫描并补充设备特有的温控文件路径。
-- `THERMAL_MOUNT_MODE=0`：持续挂载。
-- `THERMAL_MOUNT_MODE=1`：仅在外部供电时挂载。
-- 源码中的温控挂载记录上限为 1024。
+- 通过 bind mount 将模块中的占位文件挂载到系统温控配置路径。
+- 当前 `module/thermal_files` 收录 487 个温控相关路径，覆盖 `system`、`vendor`、`product`、`system_ext` 等位置。
+- 递归扫描和挂载上限为 1024 条路径，同时保留旧设备兼容路径。
+- 可选择全局挂载或仅在充电时挂载。
 
-### 魅族适配
+### 其他功能
 
-- 可切换魅族专用温控方案。
-- 支持配置 `wired_level` 充电档位。
-- 支持 Flyme 清空方案与 extremegt 放宽方案。
-- 魅族相关功能默认关闭，必须确认设备兼容后再开启。
-
-### WebUI
-
-- 实时显示电量、温度、电流、功率和充电状态。
-- 显示充放电曲线。
-- 在线读取、修改并保存模块配置。
-- 支持停止充电、旁路供电、温控挂载、温度模拟和魅族选项。
-- 支持双电芯电流/功率显示切换。
-- 可查看模块运行日志。
-
-## 运行流程
-
-1. `service.sh` 等待 Android 开机完成，并覆盖创建本次启动的 `log.txt`。
-2. 脚本处理部分厂商温控服务和目录，然后确保只启动一个 `turbo-charge` 守护进程。
-3. 主程序读取 `option.txt`，扫描电池、充电器、电流、停充、温度和旁路相关节点。
-4. 主循环按 `CYCLE_TIME` 周期读取电量、温度、充电状态和外部供电状态。
-5. 程序合并温控、电量控制、前台应用和旁路请求，再按优先级写入对应节点。
-6. 配置文件变化后自动重新读取；退出功能、拔线或进程终止时尽量恢复已修改的状态。
+- 电池温度模拟，可选择全局生效或仅在充电时生效。
+- 魅族设备适配，支持 Flyme 清空方案和 extremegt 放宽方案。
+- OPPO、realme、一加温控服务处理和小米云控目录处理。
+- WebUI 实时显示电量、温度、电流、功率和运行日志，并可编辑模块配置。
 
 ## 安装
 
-### 使用发布包
+仓库中的 `module/` 是当前正式模块目录。制作安装包时，应压缩 `module/` **内部内容**，确保 ZIP 根目录直接包含 `META-INF/`、`module.prop`、`customize.sh` 等文件，而不是额外套一层 `module/` 目录。
 
-1. 下载已经编译并验证的模块 ZIP。
-2. 在 Magisk 或兼容 Magisk 模块格式的 Root 管理器中刷入。
+1. 将模块制作成 ZIP 安装包。
+2. 在 Magisk、KernelSU 或兼容的模块管理器中刷入。
 3. 重启设备。
-4. 首次启动后检查 `/data/adb/modules/turbo-charge/log.txt`。
-5. 先使用保守参数测试，再逐步调整电流和温度阈值。
+4. 在模块管理器中打开 WebUI，或直接编辑配置文件。
 
-`charge-boost/META-INF` 中的传统安装入口要求 Magisk v20.4 或更高版本。不同 Root 管理器对 WebUI、安装脚本和模块动作按钮的支持可能不同。
-
-> GitHub 的“Download ZIP”会把整个仓库结构一起打包，不是可直接刷入的模块包。制作模块 ZIP 时，应让 `charge-boost` 目录内的文件位于 ZIP 根目录。
-
-## 配置
-
-配置文件：
+安装后的常用路径：
 
 ```text
-/data/adb/modules/turbo-charge/option.txt
+配置文件：/data/adb/modules/turbo-charge/option.txt
+旁路列表：/data/adb/modules/turbo-charge/bypass_charge.txt
+运行日志：/data/adb/modules/turbo-charge/log.txt
+主程序：  /data/adb/modules/turbo-charge/bin/turbo-charge
 ```
 
-| 配置项 | 默认值 | 说明 |
-| --- | ---: | --- |
-| `CYCLE_TIME` | `1` | 主循环间隔，单位为秒，必须大于 0 |
-| `CURRENT_MAX` | `50000000` | 最大充电电流，单位为 μA |
-| `STEP_CHARGING_DISABLED` | `0` | `1` 表示允许按阈值关闭阶梯式充电 |
-| `STEP_CHARGING_DISABLED_THRESHOLD` | `15` | 达到该电量后关闭阶梯式充电 |
-| `TEMP_CTRL` | `1` | `1` 启用三档温度控制 |
-| `POWER_CTRL` | `0` | `1` 启用电量阈值控制 |
-| `CHARGE_STOP` | `95` | 触发停充或旁路的电量，运行时限制在 1–100 |
-| `CHARGE_START` | `80` | 恢复正常充电的电量，运行时限制在 0–100 且必须小于停止阈值 |
-| `POWER_CTRL_MODE` | `0` | `0` 停止充电；`1` 旁路供电 |
-| `TEMP_LEVEL1` | `45` | 第一档温度阈值，单位为 ℃ |
-| `TEMP_LEVEL1_CURRENT` | `3000000` | 第一档限流值，单位为 μA |
-| `TEMP_LEVEL2` | `50` | 第二档温度阈值，单位为 ℃ |
-| `TEMP_LEVEL2_CURRENT` | `1000000` | 第二档限流值，单位为 μA |
-| `TEMP_MAX` | `52` | 第三档高温停充阈值，单位为 ℃ |
-| `TEMP_SIMULATE` | `0` | `1` 启用电池温度模拟 |
-| `TEMP_SIMULATE_MOUNT_MODE` | `0` | `0` 持续模拟；`1` 仅外部供电时模拟 |
-| `TEMP_SIMULATE_VALUE` | `28` | 模拟温度，单位为 ℃ |
-| `THERMAL_MOUNT_MODE` | `0` | `0` 持续挂载；`1` 仅外部供电时挂载 |
-| `MEIZU_DEVICE` | `0` | `1` 启用魅族适配 |
-| `MEIZU_CHARGE_LEVEL` | `10` | 魅族充电档位，范围 1–10 |
-| `MEIZU_THERMAL_SCHEME` | `2` | `1` Flyme 清空；`2` extremegt 放宽 |
-| `BYPASS_CHARGE` | `0` | `1` 启用前台应用旁路 |
+## 主要配置
 
-所有配置必须是非负整数，`CYCLE_TIME` 不能为 0。程序会对部分模式值和电量阈值进行运行时保护；配置非法时会采用修正值或保留上一次有效值，并在日志中提示。
+| 配置项 | 说明 | 默认值 |
+| --- | --- | ---: |
+| `CYCLE_TIME` | 主循环间隔，单位秒 | `1` |
+| `CURRENT_MAX` | 最大充电电流，单位 μA | `50000000` |
+| `STEP_CHARGING_DISABLED` | 是否关闭阶梯式充电 | `0` |
+| `TEMP_CTRL` | 是否启用三档温度控制 | `1` |
+| `TEMP_LEVEL1` | 第一档温度阈值，单位 ℃ | `45` |
+| `TEMP_LEVEL1_CURRENT` | 第一档限流值，单位 μA | `3000000` |
+| `TEMP_LEVEL2` | 第二档温度阈值，单位 ℃ | `50` |
+| `TEMP_LEVEL2_CURRENT` | 第二档限流值，单位 μA | `1000000` |
+| `TEMP_MAX` | 第三档高温停充阈值，单位 ℃ | `52` |
+| `POWER_CTRL` | 是否启用电量控制 | `0` |
+| `CHARGE_STOP` | 停止充电或进入旁路的电量阈值 | `95` |
+| `CHARGE_START` | 恢复充电或退出旁路的电量阈值 | `80` |
+| `POWER_CTRL_MODE` | `0` 停止充电，`1` 旁路供电 | `0` |
+| `BYPASS_CHARGE` | 是否启用前台应用旁路 | `0` |
+| `TEMP_SIMULATE` | 是否启用电池温度模拟 | `0` |
+| `THERMAL_MOUNT_MODE` | `0` 全局挂载，`1` 仅充电时挂载 | `0` |
+| `MEIZU_DEVICE` | 是否启用魅族适配 | `0` |
 
-## 前台应用旁路列表
+完整配置和注释见 [`module/option.txt`](module/option.txt)。
 
-文件位置：
+## 运行流程
 
-```text
-/data/adb/modules/turbo-charge/bypass_charge.txt
-```
-
-格式为一行一个包名，空行和以 `#` 开头的行会被忽略：
-
-```text
-com.tencent.tmgp.sgame
-com.miHoYo.Yuanshen
-com.hypergryph.arknights
-```
-
-建议先通过 `dumpsys window`、`dumpsys activity` 或其他可靠工具确认实际包名。
-
-## 日志
-
-日志文件：
-
-```text
-/data/adb/modules/turbo-charge/log.txt
-```
-
-- 每次开机由 `service.sh` 覆盖旧日志。
-- 主程序日志通常使用 `UTC+8` 时间戳。
-- 硬件旁路启用、兼容模式、节点恢复、配置错误和节点不可用都会写入日志。
-
-常见日志示例：
-
-```text
-当前电量 95%，大于等于停止阈值，请求旁路供电
-旁路供电已启用硬件节点：/sys/...（1）
-设备未找到可验证的硬件旁路节点，使用 500mA 兼容模式
-硬件旁路已退出，节点恢复为原值：/sys/...（0）
-旁路供电不可用：未找到硬件旁路节点，也没有可用的电流控制节点；稍后将自动重试
-```
+1. `module/service.sh` 等待 Android 启动完成，完成厂商相关初始化。
+2. 启动 `module/bin/turbo-charge`，标准输出和错误输出写入 `log.txt`。
+3. 主程序读取配置、扫描设备节点，并启动配置监听与控制循环。
+4. 根据外部电源、电量、温度、屏幕和前台应用状态，执行电流控制、停充、旁路、温度模拟和温控路径挂载。
+5. 配置变化时重新读取；功能关闭、拔掉电源或程序退出时，尽可能恢复此前保存的节点状态。
 
 ## 仓库结构
 
 ```text
 charge-turbo/
-├─ charge-boost/                  Magisk 模块目录
-│  ├─ bin/turbo-charge           AArch64 Android 预编译主程序
-│  ├─ thermal_files/             通用温控零字节占位文件
-│  ├─ meizu_files/               魅族温控资源
-│  ├─ webroot/                   WebUI
-│  ├─ option.txt                 默认配置
-│  ├─ bypass_charge.txt          前台应用旁路列表
-│  ├─ customize.sh               安装脚本
-│  └─ service.sh                 开机服务
+├─ module/                 当前 Magisk 模块
+│  ├─ META-INF/            安装入口
+│  ├─ bin/turbo-charge     AArch64 Android 主程序
+│  ├─ thermal_files/       温控路径文件
+│  ├─ meizu_files/         魅族适配文件
+│  ├─ webroot/             WebUI
+│  ├─ action.sh
+│  ├─ bypass_charge.txt
+│  ├─ customize.sh
+│  ├─ module.prop
+│  ├─ option.txt
+│  ├─ service.sh
+│  └─ uninstall.sh
 ├─ 源码/
-│  ├─ 模块化/                    当前正式源码及唯一构建入口
-│  ├─ 单文件版/                  历史对照源码，不参与正式构建
-│  └─ 测试/                      针对性测试源码
-├─ tools/                        构建、静态验证和设备节点检测工具
-├─ 文档/                         发布说明与补充文档
-├─ LICENSE                       AGPL-3.0-only 协议全文
+│  └─ 模块化/              正式主程序源码
+├─ LICENSE                 AGPL-3.0-only 协议全文
 └─ README.md
 ```
 
-以下本地目录不会作为源码仓库内容上传：`build/`、`原件/`、`参考资料/`、`发布包/`、`.claude/`，以及单独保存的参考 ZIP。
+## 编译
 
-> 仓库中的 `module/` 是旧版历史目录，仅用于追溯早期实现；当前开发、编译和后续打包均以 `charge-boost/` 与 `源码/模块化` 为准。
-
-## 源码验证与构建
-
-Windows 构建脚本默认使用 Android NDK `29.0.14206865` 的 AArch64 Android clang。
-
-只做结构和功能静态验证，不编译：
+正式二进制仅使用 `源码/模块化/` 编译。以下 PowerShell 示例使用 Android NDK 29 的 AArch64 Android clang；如果 NDK 安装位置或版本不同，请修改 `$clang`：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\verify_modular_source.ps1
-powershell -ExecutionPolicy Bypass -File .\tools\verify_meizu_feature.ps1
+$src = (Resolve-Path '.\源码\模块化').Path
+$clang = "$env:LOCALAPPDATA\Android\Sdk\ndk\29.0.14206865\toolchains\llvm\prebuilt\windows-x86_64\bin\aarch64-linux-android23-clang.cmd"
+$out = Join-Path $PWD 'build\turbo-charge'
+
+New-Item -ItemType Directory -Force -Path (Split-Path $out) | Out-Null
+$sources = Get-ChildItem -LiteralPath $src -Recurse -Filter '*.c' |
+    Sort-Object FullName |
+    ForEach-Object FullName
+$includeArgs = @("-I$src") + @(
+    Get-ChildItem -LiteralPath $src -Recurse -Directory |
+        Sort-Object FullName |
+        ForEach-Object { "-I$($_.FullName)" }
+)
+
+& $clang -O2 -s -Wall -Wextra -Wno-unused-parameter @includeArgs -o $out @sources
 ```
 
-编译模块化源码到 `build/turbo-charge`：
+验证产物为 AArch64 Android ELF 后，再替换 `module/bin/turbo-charge`。不要使用桌面平台编译器生成的可执行文件替换 Android 主程序。
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\build_turbo_charge.ps1
-```
+## 兼容性与验证
 
-正式构建只使用 `源码/模块化`。`tools/build_turbo_charge.ps1` 会递归收集模块化目录中的 `.c` 文件，并输出 `build/turbo-charge`；`源码/单文件版` 不再参与正式编译。
+兼容性主要取决于设备是否暴露可写的充电、电流、温度和旁路节点。同一品牌或同一 SoC 在不同系统版本、内核和充电驱动下也可能表现不同。
 
-将验证通过的构建结果同步到模块目录：
+建议在真机上重点验证：
 
-```powershell
-Copy-Item -LiteralPath .\build\turbo-charge -Destination .\charge-boost\bin\turbo-charge -Force
-```
-
-提交预编译文件前，应确认编译无错误和警告，使用 `llvm-readelf` 检查其为 AArch64 Android ELF，并在支持的真机上验证旁路、停充、拔线恢复、高温恢复和卸载恢复行为。
-
-## 兼容性
-
-兼容性主要取决于设备是否暴露可写的 `power_supply`、充电、温度和旁路节点，而不是仅由芯片品牌决定。即使同一品牌或同一 SoC，不同系统版本、内核和厂商充电驱动也可能表现不同。
-
-建议重点验证：
-
-- 正常充电、拔线和重连是否恢复。
+- 正常充电、拔线和重新连接是否恢复正常。
 - 达到电量阈值后是否正确停充或进入旁路。
 - 退出旁路后硬件节点是否恢复原值。
-- 不支持硬件旁路时是否正确进入 500 mA 兼容模式。
-- 高温停充与降温恢复是否符合预期。
-- 重启、卸载和异常终止后是否存在残留状态。
+- 不支持硬件旁路时，500 mA 兼容模式是否按预期工作。
+- 高温停充、降温恢复、重启和卸载后的状态恢复行为。
 
-## 致谢
-
-- [chase535/turbo-charge](https://github.com/chase535/turbo-charge)：原始充电优化项目，原作者酷安 @诺鸡鸭。
-- 酷安 @御坂Thepoor：温控移除方案及相关检测思路。
-- 本项目维护与二次开发：[@tanxue0118](https://github.com/tanxue0118) / 一只做梦的猫。
+当前代码和预编译二进制保持同步，但硬件旁路及设备节点恢复行为仍需针对具体机型、内核和充电驱动进行真机验证。
 
 ## 开源协议
 
 本项目以 **GNU Affero General Public License v3.0 only（AGPL-3.0-only）** 发布，完整条款见 [LICENSE](LICENSE)。
 
-如果你分发修改后的版本，或通过网络向用户提供修改后的程序功能，请按照 AGPL-3.0 的要求保留版权和协议声明，并向对应用户提供完整、可修改的源代码。
+如果分发修改后的版本，或通过网络向用户提供修改后程序的功能，请按照 AGPL-3.0 的要求保留版权和协议声明，并向对应用户提供完整、可修改的源代码。
 
 本项目不提供任何明示或暗示担保。设备兼容性、数据安全、电池健康和硬件风险由使用者自行评估并承担。

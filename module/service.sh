@@ -48,17 +48,16 @@ fi
 
 chmod 755 "${MODDIR}/bin/turbo-charge"
 
-# 双重启动：第一次静默启动，第二次带日志启动
-nohup "${MODDIR}/bin/turbo-charge" > /dev/null 2>&1 &
-sleep 1
-first_process=$(ps -eo comm,pid | grep "turbo-charge" | awk '{print $2}')
+# 清理旧进程后单进程启动，避免多个守护进程同时写充电节点
+old_process=$(ps -eo comm,pid | awk '$1=="turbo-charge"{print $2}')
+if [ -n "${old_process}" ]; then
+    kill ${old_process} 2>/dev/null
+    sleep 1
+    echo "已清理旧 turbo-charge 进程：${old_process}" >> "${LOG_FILE}"
+fi
 
 nohup "${MODDIR}/bin/turbo-charge" >> "${LOG_FILE}" 2>&1 &
 
-echo "turbo-charge 启动命令已执行" >> "${LOG_FILE}"
-
-# 60秒后清理第一次启动的进程
-sleep 60
-[[ -n "${first_process}" ]] && kill ${first_process}
+echo "turbo-charge 启动命令已执行，PID=$!" >> "${LOG_FILE}"
 
 exit 0

@@ -77,7 +77,7 @@ check_file()
 
     if [[ -z "${current_max_file}" ]]; then
         no_current_change=1
-        ui_print " ！找不到电流控制文件，电流控制、温控限流、伪旁路供电可能失效"
+        ui_print " ！找不到电流控制文件，电流控制、温控限流和旁路兼容模式可能失效；硬件旁路仍会自动探测"
     fi
 
     if [[ -n "${no_step_charging}" && -n "${no_power_control}" && -n "${no_current_change}" ]]; then
@@ -139,48 +139,59 @@ merge_old_option()
 
     ui_print " - 开始迁移旧配置值"
 
+    local OLD_KEYS_FILE="${TMPDIR}/old_option_keys.txt"
+    local NEW_KEYS_FILE="${TMPDIR}/new_option_keys.txt"
+
+    grep '^[A-Z0-9_][A-Z0-9_]*=' "${TMPDIR}/old_option.txt" | sed 's/=.*$//' > "${OLD_KEYS_FILE}"
+    grep '^[A-Z0-9_][A-Z0-9_]*=' "${TMPDIR}/new_option.txt" | sed 's/=.*$//' > "${NEW_KEYS_FILE}"
+
     while IFS= read -r LINE || [[ -n "${LINE}" ]]; do
-        # 跳过空行
         [[ -z "${LINE}" ]] && continue
 
-        # 跳过注释
         case "${LINE}" in
             \#*) continue ;;
         esac
 
-        # 必须包含 =
         echo "${LINE}" | grep -q "=" || continue
 
         KEY="${LINE%%=*}"
         VALUE="${LINE#*=}"
 
-        # KEY 不能为空
         [[ -z "${KEY}" ]] && continue
 
-        # 新配置模板里不存在的 KEY 不迁移
-        if ! grep -q "^${KEY}=" "${TMPDIR}/new_option.txt"; then
-            ui_print "  - ${KEY} 已不在新配置中，跳过"
+        if ! grep -qx "${KEY}" "${NEW_KEYS_FILE}"; then
+            ui_print "  - ${KEY} 已不在新配置中，删除旧值"
             continue
         fi
 
-        # 校验值是否合法
         if ! is_valid_uint "${VALUE}"; then
             DEFAULT_VALUE=$(grep "^${KEY}=" "${TMPDIR}/new_option.txt" | tail -n 1 | sed "s/^${KEY}=//g")
             ui_print "  - ${KEY} 的旧值非法，使用默认值 ${DEFAULT_VALUE}"
             continue
         fi
 
-        # CYCLE_TIME 不允许为 0
         if [[ "${KEY}" == "CYCLE_TIME" && "${VALUE}" -eq 0 ]]; then
             DEFAULT_VALUE=$(grep "^${KEY}=" "${TMPDIR}/new_option.txt" | tail -n 1 | sed "s/^${KEY}=//g")
             ui_print "  - CYCLE_TIME 的旧值为 0，不允许，使用默认值 ${DEFAULT_VALUE}"
             continue
         fi
 
-        ui_print "  - ${KEY}=${VALUE}"
+        ui_print "  - 保留旧值 ${KEY}=${VALUE}"
         sed -i "s/^${KEY}=.*/${KEY}=${VALUE}/g" "${TMPDIR}/new_option.txt"
-
     done < "${TMPDIR}/old_option.txt"
+
+    while IFS= read -r KEY || [[ -n "${KEY}" ]]; do
+        [[ -z "${KEY}" ]] && continue
+
+        if grep -qx "${KEY}" "${OLD_KEYS_FILE}"; then
+            continue
+        fi
+
+        DEFAULT_VALUE=$(grep "^${KEY}=" "${TMPDIR}/new_option.txt" | tail -n 1 | sed "s/^${KEY}=//g")
+        ui_print "  - 新增默认项 ${KEY}=${DEFAULT_VALUE}"
+    done < "${NEW_KEYS_FILE}"
+
+    rm -f "${OLD_KEYS_FILE}" "${NEW_KEYS_FILE}"
 
     ui_print " - 旧配置迁移完成"
 }
