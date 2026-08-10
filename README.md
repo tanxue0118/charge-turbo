@@ -3,7 +3,7 @@
 面向 Android Root 设备的充电控制与温控管理模块，模块 ID 为 `turbo-charge`。本仓库在原项目基础上持续维护，增加了三档温度控制、电量停止充电、旁路供电、魅族适配、温控路径扩展和 WebUI 等功能。
 
 > [!CAUTION]
-> 本模块会修改 `/sys` 充电节点，并可能停止或绕过部分系统温控策略。错误配置可能造成设备过热、电池寿命下降、充电异常、重启或硬件损坏。请先准备可用的恢复方式，并自行承担使用风险。
+> 本模块会修改 `/sys` 充电节点，并可能停止或绕过部分系统温控策略。错误配置可能造成设备过热、电池寿命下降、充电异常、重启或硬件损坏。自行承担使用风险。
 
 ## 项目来源与署名
 
@@ -59,15 +59,6 @@
 - 魅族设备适配，支持 Flyme 清空方案和 extremegt 放宽方案。
 - OPPO、realme、一加温控服务处理和小米云控目录处理。
 - WebUI 实时显示电量、温度、电流、功率和运行日志，并可编辑模块配置。
-
-## 安装
-
-仓库中的 `module/` 是当前正式模块目录。制作安装包时，应压缩 `module/` **内部内容**，确保 ZIP 根目录直接包含 `META-INF/`、`module.prop`、`customize.sh` 等文件，而不是额外套一层 `module/` 目录。
-
-1. 将模块制作成 ZIP 安装包。
-2. 在 Magisk、KernelSU 或兼容的模块管理器中刷入。
-3. 重启设备。
-4. 在模块管理器中打开 WebUI，或直接编辑配置文件。
 
 安装后的常用路径：
 
@@ -133,43 +124,7 @@ charge-turbo/
 └─ README.md
 ```
 
-## 编译
 
-正式二进制仅使用 `源码/模块化/` 编译。以下 PowerShell 示例使用 Android NDK 29 的 AArch64 Android clang；如果 NDK 安装位置或版本不同，请修改 `$clang`：
-
-```powershell
-$src = (Resolve-Path '.\源码\模块化').Path
-$clang = "$env:LOCALAPPDATA\Android\Sdk\ndk\29.0.14206865\toolchains\llvm\prebuilt\windows-x86_64\bin\aarch64-linux-android23-clang.cmd"
-$out = Join-Path $PWD 'build\turbo-charge'
-
-New-Item -ItemType Directory -Force -Path (Split-Path $out) | Out-Null
-$sources = Get-ChildItem -LiteralPath $src -Recurse -Filter '*.c' |
-    Sort-Object FullName |
-    ForEach-Object FullName
-$includeArgs = @("-I$src") + @(
-    Get-ChildItem -LiteralPath $src -Recurse -Directory |
-        Sort-Object FullName |
-        ForEach-Object { "-I$($_.FullName)" }
-)
-
-& $clang -O2 -s -Wall -Wextra -Wno-unused-parameter @includeArgs -o $out @sources
-```
-
-验证产物为 AArch64 Android ELF 后，再替换 `module/bin/turbo-charge`。不要使用桌面平台编译器生成的可执行文件替换 Android 主程序。
-
-## 兼容性与验证
-
-兼容性主要取决于设备是否暴露可写的充电、电流、温度和旁路节点。同一品牌或同一 SoC 在不同系统版本、内核和充电驱动下也可能表现不同。
-
-建议在真机上重点验证：
-
-- 正常充电、拔线和重新连接是否恢复正常。
-- 达到电量阈值后是否正确停充或进入旁路。
-- 退出旁路后硬件节点是否恢复原值。
-- 不支持硬件旁路时，500 mA 兼容模式是否按预期工作。
-- 高温停充、降温恢复、重启和卸载后的状态恢复行为。
-
-当前代码和预编译二进制保持同步，但硬件旁路及设备节点恢复行为仍需针对具体机型、内核和充电驱动进行真机验证。
 
 ## 开源协议
 
