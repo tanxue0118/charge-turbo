@@ -24,17 +24,11 @@ void sync_bypass_control(BypassState *bypass_state,
                          PowerControlState *power_state,
                          int stop_requested,
                          int bypass_requested,
-                         char **current_max_file,
-                         int current_max_file_num,
-                         char **current_limit_file,
-                         int current_limit_file_num,
+                         const ChargeCurrentNodes *nodes,
                          const char *normal_current);
 void restore_charge_control(BypassState *bypass_state,
                             PowerControlState *power_state,
-                            char **current_max_file,
-                            int current_max_file_num,
-                            char **current_limit_file,
-                            int current_limit_file_num,
+                            const ChargeCurrentNodes *nodes,
                             const char *normal_current);
 int is_bypass_active(const BypassState *state);
 void apply_step_charge_policy(uchar step_charge, const char *power);

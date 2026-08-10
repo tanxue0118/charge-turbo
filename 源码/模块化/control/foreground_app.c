@@ -5,6 +5,7 @@
 #include "foreground_app.h"
 #include "printf_with_time.h"
 #include "read_option_file.h"
+#include "str_array.h"
 
 #include <fcntl.h>
 #include <pthread.h>
@@ -234,7 +235,7 @@ static void *foreground_thread_func(void *arg)
     int bypass_app_num = 0;
     time_t bypass_file_last_mtime = 0;
 
-    while (!should_stop_foreground_thread() && read_one_option("BYPASS_CHARGE") == 1) {
+    while (!should_stop_foreground_thread() && read_bool_option("BYPASS_CHARGE")) {
         char result[256] = {0};
         FILE *fp = popen("dumpsys deviceidle | grep 'mScreenOn'", "r");
 
@@ -355,52 +356,21 @@ int load_bypass_app_list(char ***apps, int *app_num, time_t *last_mtime)
     if (!fp) return 0;
 
     char line[APP_PACKAGE_NAME_MAX_SIZE] = {0};
-    int cap = 8;
-    char **list = calloc(cap, sizeof(char *));
-
-    if (!list) {
-        fclose(fp);
-        return 0;
-    }
-
-    int count = 0;
+    StrArray packages;
+    str_array_init(&packages);
 
     while (fgets(line, sizeof(line), fp)) {
-        line_feed(line);
+        char *p = trim_config_line(line);
+        if (!p) continue;
 
-        char *p = line;
-        while (*p == ' ' || *p == '\t') p++;
-
-        if (*p == '\0' || *p == '#') continue;
-
-        if (count >= cap) {
-            cap *= 2;
-            char **tmp = realloc(list, sizeof(char *) * cap);
-            if (!tmp) break;
-            list = tmp;
-        }
-
-        list[count] = calloc(1, APP_PACKAGE_NAME_MAX_SIZE);
-        if (!list[count]) break;
-
-        snprintf(list[count], APP_PACKAGE_NAME_MAX_SIZE, "%s", p);
-        count++;
+        if (!str_array_push(&packages, p)) break;
     }
 
     fclose(fp);
 
-    if (count == 0) {
-        free(list);
-        list = NULL;
-    } else {
-        char **tmp = realloc(list, sizeof(char *) * count);
-        if (tmp) list = tmp;
-    }
+    *app_num = str_array_take(&packages, apps);
 
-    *apps = list;
-    *app_num = count;
-
-    printf_with_time("旁路供电应用列表已重新读取，共 %d 个应用", count);
+    printf_with_time("旁路供电应用列表已重新读取，共 %d 个应用", *app_num);
 
     return 1;
 }

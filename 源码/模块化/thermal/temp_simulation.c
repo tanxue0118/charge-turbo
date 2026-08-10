@@ -71,6 +71,17 @@ static void format_temp_value(int deg_c, int unit, char *out, size_t out_size)
     }
 }
 
+static int is_battery_identity(const char *text)
+{
+    return contains_ignore_case(text, "batt") ||
+           contains_ignore_case(text, "bms");
+}
+
+static int simulate_temp_value(void)
+{
+    return clamp_int(read_one_option("TEMP_SIMULATE_VALUE"), 0, 100);
+}
+
 static void add_temp_fake_node(TempSimState *st, const char *target, const char *label)
 {
     if (!st || !target || !*target) return;
@@ -103,40 +114,27 @@ static void discover_battery_temp_nodes(TempSimState *st)
     st->discovered = 1;
     st->count = 0;
 
-    add_temp_fake_node(st,
-                       "/sys/class/power_supply/battery/temp",
-                       "power_supply:battery");
-
-    add_temp_fake_node(st,
-                       "/sys/class/power_supply/bms/temp",
-                       "power_supply:bms");
+    add_temp_fake_node(st, BATTERY_SUPPLY_DIR "/temp", "power_supply:battery");
+    add_temp_fake_node(st, POWER_SUPPLY_DIR "/bms/temp", "power_supply:bms");
 
     char **ps_dirs = NULL;
-    int ps_num = list_dir("/sys/class/power_supply", &ps_dirs);
+    int ps_num = list_dir(POWER_SUPPLY_DIR, &ps_dirs);
 
     for (int i = 0; i < ps_num; i++) {
         if (!ps_dirs[i]) continue;
 
-        const char *base = strrchr(ps_dirs[i], '/');
-        base = base ? base + 1 : ps_dirs[i];
+        const char *base = path_basename(ps_dirs[i]);
 
         char type_path[PATH_MAX] = {0};
         char temp_path[PATH_MAX] = {0};
         char type[128] = {0};
 
-        snprintf(type_path, sizeof(type_path), "%s/type", ps_dirs[i]);
-        snprintf(temp_path, sizeof(temp_path), "%s/temp", ps_dirs[i]);
+        join_path(type_path, sizeof(type_path), ps_dirs[i], "type");
+        join_path(temp_path, sizeof(temp_path), ps_dirs[i], "temp");
 
         read_file(type_path, type, sizeof(type));
 
-        int is_batt =
-            contains_ignore_case(base, "battery") ||
-            contains_ignore_case(base, "batt") ||
-            contains_ignore_case(base, "bms") ||
-            contains_ignore_case(type, "Battery") ||
-            contains_ignore_case(type, "BMS");
-
-        if (is_batt) {
+        if (is_battery_identity(base) || is_battery_identity(type)) {
             char label[128] = {0};
             snprintf(label, sizeof(label), "power_supply:%s", base);
             add_temp_fake_node(st, temp_path, label);
@@ -146,7 +144,7 @@ static void discover_battery_temp_nodes(TempSimState *st)
     free_string_array(&ps_dirs, ps_num);
 
     char **thermal_dirs = NULL;
-    int thermal_num = list_dir("/sys/class/thermal", &thermal_dirs);
+    int thermal_num = list_dir(THERMAL_DIR, &thermal_dirs);
 
     for (int i = 0; i < thermal_num; i++) {
         if (!thermal_dirs[i]) continue;
@@ -156,17 +154,12 @@ static void discover_battery_temp_nodes(TempSimState *st)
         char temp_path[PATH_MAX] = {0};
         char type[128] = {0};
 
-        snprintf(type_path, sizeof(type_path), "%s/type", thermal_dirs[i]);
-        snprintf(temp_path, sizeof(temp_path), "%s/temp", thermal_dirs[i]);
+        join_path(type_path, sizeof(type_path), thermal_dirs[i], "type");
+        join_path(temp_path, sizeof(temp_path), thermal_dirs[i], "temp");
 
         if (!read_file(type_path, type, sizeof(type))) continue;
 
-        int is_batt =
-            contains_ignore_case(type, "battery") ||
-            contains_ignore_case(type, "batt") ||
-            contains_ignore_case(type, "bms");
-
-        if (is_batt) {
+        if (is_battery_identity(type)) {
             char label[128] = {0};
             snprintf(label, sizeof(label), "thermal:%s", type);
             add_temp_fake_node(st, temp_path, label);
@@ -267,22 +260,18 @@ int apply_battery_temp_simulation(TempSimState *st, int is_charging)
 {
     if (!st) return -1;
 
-    int enable = read_one_option("TEMP_SIMULATE");
-    int mode = read_one_option("TEMP_SIMULATE_MOUNT_MODE");
-    int value = read_one_option("TEMP_SIMULATE_VALUE");
-
-    if (mode != 0 && mode != 1) mode = 0;
-    if (value < 0) value = 0;
-    if (value > 100) value = 100;
+    int enable = read_bool_option("TEMP_SIMULATE");
+    int mode = read_bool_option("TEMP_SIMULATE_MOUNT_MODE");
+    int value = simulate_temp_value();
 
     discover_battery_temp_nodes(st);
 
-    int simulating = (enable == 1) && (mode == 0 || is_charging);
+    int simulating = enable && (mode == 0 || is_charging);
 
     if (!simulating) {
         if (st->last_simulating == 1) {
             restore_battery_temp_nodes(st);
-            if (enable != 1)
+            if (!enable)
                 printf_with_time("温度模拟已关闭，已清除伪装值（内核会自动恢复实际温度）");
             else
                 printf_with_time("温度模拟为仅充电模式，当前未充电，已清除伪装值");
@@ -331,16 +320,11 @@ int apply_battery_temp_simulation(TempSimState *st, int is_charging)
 
 int current_simulated_temp_mc(void)
 {
-    if (read_one_option("TEMP_SIMULATE") != 1) {
+    if (!read_bool_option("TEMP_SIMULATE")) {
         return -1;
     }
 
-    int value = read_one_option("TEMP_SIMULATE_VALUE");
-
-    if (value < 0) value = 0;
-    if (value > 100) value = 100;
-
-    return value * 1000;
+    return simulate_temp_value() * 1000;
 }
 
 void handle_option_generation_change(unsigned long *last_generation,

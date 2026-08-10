@@ -4,6 +4,7 @@
 #include "file_utils.h"
 #include "printf_with_time.h"
 #include "read_option_file.h"
+#include "str_array.h"
 #include "thermal_mount.h"
 
 #include <fcntl.h>
@@ -12,7 +13,7 @@
 #include <string.h>
 #include <unistd.h>
 #define THERMAL_MOUNT_MAX 1024
-#define THERMAL_FILES_DIR "/data/adb/modules/turbo-charge/thermal_files"
+#define THERMAL_FILES_DIR MODDIR_PATH "/thermal_files"
 
 static char *mounted_thermal_paths[THERMAL_MOUNT_MAX] = {0};
 static int mounted_thermal_count = 0;
@@ -22,61 +23,34 @@ static int list_dir_recursive(const char *path, char ***out)
     if (!path || !out) return 0;
 
     *out = NULL;
-    int count = 0;
-    int cap = 64;
-    char **list = calloc(cap, sizeof(char *));
-    if (!list) return 0;
 
     char cmd[PATH_MAX + 32] = {0};
     snprintf(cmd, sizeof(cmd), "find '%s' -type f", path);
 
     FILE *fp = popen(cmd, "r");
-    if (!fp) {
-        free(list);
-        return 0;
-    }
+    if (!fp) return 0;
+
+    StrArray files;
+    str_array_init(&files);
 
     char line[PATH_MAX];
     while (fgets(line, sizeof(line), fp)) {
-        size_t len = strlen(line);
-        while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r')) {
-            line[--len] = '\0';
-        }
-        if (len == 0) continue;
+        line_feed(line);
+        if (line[0] == '\0') continue;
 
-        if (count >= cap) {
-            cap *= 2;
-            char **tmp = realloc(list, sizeof(char *) * cap);
-            if (!tmp) break;
-            list = tmp;
-        }
-
-        list[count] = strdup(line);
-        if (!list[count]) break;
-        count++;
+        if (!str_array_push(&files, line)) break;
     }
 
     pclose(fp);
 
-    if (count == 0) {
-        free(list);
-        list = NULL;
-    } else {
-        char **tmp = realloc(list, sizeof(char *) * count);
-        if (tmp) list = tmp;
-    }
-
-    *out = list;
-    return count;
+    return str_array_take(&files, out);
 }
 
 void sync_thermal_mount_mode(int is_charging, MountModeState *state)
 {
     if (!state) return;
 
-    int mode = read_one_option("THERMAL_MOUNT_MODE");
-
-    if (mode != 0 && mode != 1) mode = 0;
+    int mode = read_bool_option("THERMAL_MOUNT_MODE");
 
     if (mode == 0) {
         if (!state->mounted) {
@@ -123,7 +97,7 @@ const char *meizu_thermal_scheme_name(int scheme)
 
 static const char *select_thermal_files_dir(int *meizu_device_out, int *scheme_out)
 {
-    int meizu_device = read_one_option("MEIZU_DEVICE") == 1 ? 1 : 0;
+    int meizu_device = read_bool_option("MEIZU_DEVICE");
     int scheme = clamp_meizu_thermal_scheme(read_one_option("MEIZU_THERMAL_SCHEME"));
 
     if (meizu_device_out) *meizu_device_out = meizu_device;

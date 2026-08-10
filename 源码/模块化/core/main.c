@@ -7,6 +7,7 @@
 #include "printf_with_time.h"
 #include "read_option_file.h"
 #include "some_ctrl.h"
+#include "str_array.h"
 #include "temp_simulation.h"
 #include "thermal_mount.h"
 #include "value_set.h"
@@ -24,7 +25,7 @@ static int find_temp_sensor(char **temp_sensor)
     *temp_sensor = NULL;
 
     char **thermal_dirs = NULL;
-    int thermal_num = list_dir("/sys/class/thermal", &thermal_dirs);
+    int thermal_num = list_dir(THERMAL_DIR, &thermal_dirs);
 
     int best_index = 9999;
     char best_path[PATH_MAX] = {0};
@@ -38,8 +39,8 @@ static int find_temp_sensor(char **temp_sensor)
         char type[64] = {0};
         char temp[32] = {0};
 
-        snprintf(type_path, sizeof(type_path), "%s/type", thermal_dirs[i]);
-        snprintf(temp_path, sizeof(temp_path), "%s/temp", thermal_dirs[i]);
+        join_path(type_path, sizeof(type_path), thermal_dirs[i], "type");
+        join_path(temp_path, sizeof(temp_path), thermal_dirs[i], "temp");
 
         if (!read_file(type_path, type, sizeof(type))) continue;
         if (!read_file(temp_path, temp, sizeof(temp))) continue;
@@ -59,15 +60,44 @@ static int find_temp_sensor(char **temp_sensor)
     free_string_array(&thermal_dirs, thermal_num);
 
     if (best_index != 9999 && best_path[0]) {
-        *temp_sensor = calloc(1, strlen(best_path) + 1);
+        *temp_sensor = strdup(best_path);
         if (!*temp_sensor) return 0;
-
-        strcpy(*temp_sensor, best_path);
 
         printf_with_time("将使用 %s 温度传感器作为手机温度获取源", temp_sensors[best_index]);
         printf_with_time("温度传感器路径：%s", *temp_sensor);
 
         return 1;
+    }
+
+    return 0;
+}
+
+static const char *const CHARGE_CURRENT_MAX_SUFFIXES[] = {
+    "/constant_charge_current_max",
+    "/constant_charge_current",
+    "/fast_charge_current",
+    "/thermal_input_current"
+};
+
+static const char *const CHARGE_CURRENT_LIMIT_SUFFIXES[] = {
+    "/thermal_input_current_limit",
+    "/input_current_limit",
+    "/input_current_max"
+};
+
+static int matches_any_suffix(const char *path, const char *const *suffixes, size_t num)
+{
+    for (size_t i = 0; i < num; i++) {
+        if (ends_with(path, suffixes[i])) return 1;
+    }
+
+    return 0;
+}
+
+static int any_file_exists(const char *const *paths, size_t num)
+{
+    for (size_t i = 0; i < num; i++) {
+        if (file_exists(paths[i])) return 1;
     }
 
     return 0;
@@ -81,16 +111,13 @@ static void check_required_files(uchar *battery_status,
                                  uchar *current_change,
                                  int *temp_sensor_num,
                                  char **temp_sensor,
-                                 char ***current_max_file,
-                                 int *current_max_file_num,
-                                 char ***current_limit_file,
-                                 int *current_limit_file_num)
+                                 ChargeCurrentNodes *nodes)
 {
-    if (!file_exists("/sys/class/power_supply/battery/status")) {
+    if (!file_exists(BATTERY_STATUS_PATH)) {
         *battery_status = 0;
     }
 
-    if (!file_exists("/sys/class/power_supply/battery/capacity")) {
+    if (!file_exists(BATTERY_CAPACITY_PATH)) {
         *battery_capacity = 0;
     }
 
@@ -103,16 +130,21 @@ static void check_required_files(uchar *battery_status,
         printf_with_time("找不到 battery/status，将尝试通过外部供电节点判断充电器连接状态");
     }
 
-    if (!file_exists("/sys/class/power_supply/battery/charging_enabled") &&
-        !file_exists("/sys/class/power_supply/battery/battery_charging_enabled") &&
-        !file_exists("/sys/class/power_supply/battery/input_suspend") &&
-        !file_exists("/sys/class/qcom-battery/restricted_charging") &&
-        !file_exists("/sys/class/qcom-battery/restrict_chg")) {
+    static const char *const charge_stop_nodes[] = {
+        BATTERY_SUPPLY_DIR "/charging_enabled",
+        BATTERY_SUPPLY_DIR "/battery_charging_enabled",
+        BATTERY_SUPPLY_DIR "/input_suspend",
+        "/sys/class/qcom-battery/restricted_charging",
+        "/sys/class/qcom-battery/restrict_chg"
+    };
+
+    if (!any_file_exists(charge_stop_nodes,
+                         sizeof(charge_stop_nodes) / sizeof(charge_stop_nodes[0]))) {
         *charge_stop_supported = 0;
         printf_with_time("找不到暂停充电控制文件，电量控制的停止充电模式不可用，旁路供电模式仍会尝试运行");
     }
 
-    if (!file_exists("/sys/class/power_supply/battery/step_charging_enabled")) {
+    if (!file_exists(BATTERY_SUPPLY_DIR "/step_charging_enabled")) {
         *step_charge = 0;
         printf_with_time("找不到 step_charging_enabled，阶梯式充电控制失效");
     } else if (!*battery_capacity) {
@@ -121,13 +153,12 @@ static void check_required_files(uchar *battery_status,
     }
 
     char **power_supply_dirs = NULL;
-    int power_supply_num = list_dir("/sys/class/power_supply", &power_supply_dirs);
+    int power_supply_num = list_dir(POWER_SUPPLY_DIR, &power_supply_dirs);
 
-    int max_cap = 16;
-    int limit_cap = 16;
-
-    *current_max_file = calloc(max_cap, sizeof(char *));
-    *current_limit_file = calloc(limit_cap, sizeof(char *));
+    StrArray max_files;
+    StrArray limit_files;
+    str_array_init(&max_files);
+    str_array_init(&limit_files);
 
     for (int i = 0; i < power_supply_num; i++) {
         char **files = NULL;
@@ -137,27 +168,14 @@ static void check_required_files(uchar *battery_status,
             char *path = files[j];
             if (!path) continue;
 
-            if (ends_with(path, "/constant_charge_current_max") ||
-                ends_with(path, "/constant_charge_current") ||
-                ends_with(path, "/fast_charge_current") ||
-                ends_with(path, "/thermal_input_current")) {
-                if (*current_max_file_num >= max_cap) {
-                    max_cap *= 2;
-                    *current_max_file = realloc(*current_max_file, sizeof(char *) * max_cap);
-                }
-
-                (*current_max_file)[*current_max_file_num] = strdup(path);
-                (*current_max_file_num)++;
-            } else if (ends_with(path, "/thermal_input_current_limit") ||
-                       ends_with(path, "/input_current_limit") ||
-                       ends_with(path, "/input_current_max")) {
-                if (*current_limit_file_num >= limit_cap) {
-                    limit_cap *= 2;
-                    *current_limit_file = realloc(*current_limit_file, sizeof(char *) * limit_cap);
-                }
-
-                (*current_limit_file)[*current_limit_file_num] = strdup(path);
-                (*current_limit_file_num)++;
+            if (matches_any_suffix(path, CHARGE_CURRENT_MAX_SUFFIXES,
+                                   sizeof(CHARGE_CURRENT_MAX_SUFFIXES) /
+                                   sizeof(CHARGE_CURRENT_MAX_SUFFIXES[0]))) {
+                str_array_push(&max_files, path);
+            } else if (matches_any_suffix(path, CHARGE_CURRENT_LIMIT_SUFFIXES,
+                                          sizeof(CHARGE_CURRENT_LIMIT_SUFFIXES) /
+                                          sizeof(CHARGE_CURRENT_LIMIT_SUFFIXES[0]))) {
+                str_array_push(&limit_files, path);
             }
         }
 
@@ -166,10 +184,13 @@ static void check_required_files(uchar *battery_status,
 
     free_string_array(&power_supply_dirs, power_supply_num);
 
-    if (*current_max_file_num == 0 && *current_limit_file_num == 0) {
+    nodes->max_count = str_array_take(&max_files, &nodes->max_files);
+    nodes->limit_count = str_array_take(&limit_files, &nodes->limit_files);
+
+    if (nodes->max_count == 0 && nodes->limit_count == 0) {
         *current_change = 0;
         printf_with_time("未找到充电电流控制文件和电流限制文件，电流控制、温控限流和旁路兼容模式不可用；硬件旁路仍会自动探测");
-    } else if (*current_max_file_num == 0) {
+    } else if (nodes->max_count == 0) {
         printf_with_time("未找到电流控制文件，但找到电流限制文件，部分电流控制功能可用");
     }
 
@@ -186,13 +207,62 @@ static void check_required_files(uchar *battery_status,
         printf_with_time("温控移除功能将继续执行");
     }
 
-    for (int i = 0; i < *current_max_file_num; i++) {
-        printf_with_time("找到电流控制文件：%s", (*current_max_file)[i]);
+    for (int i = 0; i < nodes->max_count; i++) {
+        printf_with_time("找到电流控制文件：%s", nodes->max_files[i]);
     }
 
-    for (int i = 0; i < *current_limit_file_num; i++) {
-        printf_with_time("找到电流限制文件：%s", (*current_limit_file)[i]);
+    for (int i = 0; i < nodes->limit_count; i++) {
+        printf_with_time("找到电流限制文件：%s", nodes->limit_files[i]);
     }
+}
+
+typedef struct {
+    int lv1_mc;
+    int lv2_mc;
+    int max_mc;
+    char lv1_current[32];
+    char lv2_current[32];
+} TempCtrlSettings;
+
+static void read_temp_ctrl_settings(TempCtrlSettings *settings)
+{
+    settings->lv1_mc = read_one_option("TEMP_LEVEL1") * 1000;
+    settings->lv2_mc = read_one_option("TEMP_LEVEL2") * 1000;
+    settings->max_mc = read_one_option("TEMP_MAX") * 1000;
+
+    snprintf(settings->lv1_current, sizeof(settings->lv1_current), "%d",
+             read_one_option("TEMP_LEVEL1_CURRENT"));
+    snprintf(settings->lv2_current, sizeof(settings->lv2_current), "%d",
+             read_one_option("TEMP_LEVEL2_CURRENT"));
+}
+
+static void read_battery_status(uchar available, char *out, size_t out_size)
+{
+    out[0] = '\0';
+
+    if (available) read_file(BATTERY_STATUS_PATH, out, out_size);
+}
+
+static void read_battery_capacity(uchar available, char *out, size_t out_size)
+{
+    if (available) {
+        read_file(BATTERY_CAPACITY_PATH, out, out_size);
+    } else {
+        snprintf(out, out_size, "0");
+    }
+}
+
+/* 传感器温度优先让位于模拟温度；返回 0 表示本轮无法取得温度。 */
+static int refresh_temp_mc(const char *temp_sensor, int *temp_mc)
+{
+    int simulated_temp_mc = current_simulated_temp_mc();
+
+    if (simulated_temp_mc > 0) {
+        *temp_mc = simulated_temp_mc;
+        return 1;
+    }
+
+    return read_temp_mc(temp_sensor, temp_mc);
 }
 
 static int get_charging_state(const char *status)
@@ -220,8 +290,8 @@ static int get_power_connection_state(int battery_status_available,
 int main(void)
 {
     char *temp_sensor = NULL;
-    char **current_limit_file = NULL;
-    char **current_max_file = NULL;
+    ChargeCurrentNodes charge_current_nodes;
+    memset(&charge_current_nodes, 0, sizeof(charge_current_nodes));
 
     char charge[32] = {0};
     char power[16] = {0};
@@ -238,8 +308,6 @@ int main(void)
     uchar logged_temp_limit_fallback = 0;
 
     int temp_sensor_num = 0;
-    int current_limit_file_num = 0;
-    int current_max_file_num = 0;
 
     int is_first_time = 1;
     int app_bypass_requested = 0;
@@ -282,27 +350,25 @@ int main(void)
                          &current_change,
                          &temp_sensor_num,
                          &temp_sensor,
-                         &current_max_file,
-                         &current_max_file_num,
-                         &current_limit_file,
-                         &current_limit_file_num);
+                         &charge_current_nodes);
 
     int android_version = check_android_version();
 
     printf_with_time("文件检测完毕，程序开始运行");
 
     set_value("/sys/kernel/fast_charge/force_fast_charge", "1");
-    set_value("/sys/class/power_supply/battery/system_temp_level", "1");
-    set_value("/sys/class/power_supply/usb/boost_current", "1");
-    set_value("/sys/class/power_supply/battery/safety_timer_enabled", "0");
+    set_value(BATTERY_SUPPLY_DIR "/system_temp_level", "1");
+    set_value(POWER_SUPPLY_DIR "/usb/boost_current", "1");
+    set_value(BATTERY_SUPPLY_DIR "/safety_timer_enabled", "0");
     set_value("/sys/kernel/fast_charge/failsafe", "1");
-    set_value("/sys/class/power_supply/battery/allow_hvdcp3", "1");
-    set_value("/sys/class/power_supply/usb/pd_allowed", "1");
-    set_value("/sys/class/power_supply/battery/input_current_limited", "0");
-    set_value("/sys/class/power_supply/battery/input_current_settled", "1");
+    set_value(BATTERY_SUPPLY_DIR "/allow_hvdcp3", "1");
+    set_value(POWER_SUPPLY_DIR "/usb/pd_allowed", "1");
+    set_value(BATTERY_SUPPLY_DIR "/input_current_limited", "0");
+    set_value(BATTERY_SUPPLY_DIR "/input_current_settled", "1");
     set_value("/sys/class/qcom-battery/restrict_chg", "0");
 
-    set_array_value(current_limit_file, current_limit_file_num, "-1");
+    set_array_value(charge_current_nodes.limit_files,
+                    charge_current_nodes.limit_count, "-1");
     charge_ctl("1");
 
     while (program_running) {
@@ -314,16 +380,8 @@ int main(void)
         snprintf(current_max_char, sizeof(current_max_char), "%d",
                  read_one_option("CURRENT_MAX"));
 
-        if (battery_capacity) {
-            read_file("/sys/class/power_supply/battery/capacity", power, sizeof(power));
-        } else {
-            strcpy(power, "0");
-        }
-
-        charge[0] = '\0';
-        if (battery_status) {
-            read_file("/sys/class/power_supply/battery/status", charge, sizeof(charge));
-        }
+        read_battery_capacity(battery_capacity, power, sizeof(power));
+        read_battery_status(battery_status, charge, sizeof(charge));
         is_charging = get_power_connection_state(battery_status, charge);
 
         sync_thermal_mount_mode(is_charging, &thermal_mount_state);
@@ -357,10 +415,7 @@ int main(void)
                             &power_control_state,
                             is_charging ? power_stop_requested : 0,
                             is_charging ? (power_bypass_requested || app_bypass_requested) : 0,
-                            current_max_file,
-                            current_max_file_num,
-                            current_limit_file,
-                            current_limit_file_num,
+                            &charge_current_nodes,
                             current_max_char);
 
         if (!is_charging) {
@@ -388,57 +443,39 @@ int main(void)
             continue;
         }
 
-        if (read_one_option("TEMP_CTRL") == 1 &&
+        if (read_bool_option("TEMP_CTRL") &&
             temp_sensor_num == 1 &&
             current_change &&
             temp_sensor != NULL) {
             int temp_mc = 0;
-            int simulated_temp_mc = current_simulated_temp_mc();
 
-            if (simulated_temp_mc > 0) {
-                temp_mc = simulated_temp_mc;
-            } else if (!read_temp_mc(temp_sensor, &temp_mc)) {
+            if (!refresh_temp_mc(temp_sensor, &temp_mc)) {
                 sleep(cycle_time);
                 continue;
             }
 
-            int lv1_mc = read_one_option("TEMP_LEVEL1") * 1000;
-            int lv2_mc = read_one_option("TEMP_LEVEL2") * 1000;
-            int max_mc = read_one_option("TEMP_MAX") * 1000;
-            char lv1_cur[32], lv2_cur[32];
-            snprintf(lv1_cur, sizeof(lv1_cur), "%d", read_one_option("TEMP_LEVEL1_CURRENT"));
-            snprintf(lv2_cur, sizeof(lv2_cur), "%d", read_one_option("TEMP_LEVEL2_CURRENT"));
+            TempCtrlSettings temp_ctrl;
+            read_temp_ctrl_settings(&temp_ctrl);
 
             while (program_running &&
                    !is_bypass_active(&bypass_state) &&
                    !power_control_state.stop_applied &&
-                   temp_mc >= lv1_mc) {
+                   temp_mc >= temp_ctrl.lv1_mc) {
                 cycle_time = read_one_option("CYCLE_TIME");
                 snprintf(current_max_char, sizeof(current_max_char), "%d",
                          read_one_option("CURRENT_MAX"));
-                lv1_mc = read_one_option("TEMP_LEVEL1") * 1000;
-                lv2_mc = read_one_option("TEMP_LEVEL2") * 1000;
-                max_mc = read_one_option("TEMP_MAX") * 1000;
-                snprintf(lv1_cur, sizeof(lv1_cur), "%d", read_one_option("TEMP_LEVEL1_CURRENT"));
-                snprintf(lv2_cur, sizeof(lv2_cur), "%d", read_one_option("TEMP_LEVEL2_CURRENT"));
+                read_temp_ctrl_settings(&temp_ctrl);
 
                 handle_option_generation_change(&last_option_generation, &temp_sim_state, 1);
                 handle_meizu_generation_change(&last_meizu_device, &thermal_mount_state, 1);
 
-                if (current_max_file_num > 0)
-                    set_array_value(current_limit_file, current_limit_file_num, "-1");
+                if (charge_current_nodes.max_count > 0)
+                    set_array_value(charge_current_nodes.limit_files,
+                                    charge_current_nodes.limit_count, "-1");
 
-                simulated_temp_mc = current_simulated_temp_mc();
-                if (simulated_temp_mc > 0) {
-                    temp_mc = simulated_temp_mc;
-                } else if (!read_temp_mc(temp_sensor, &temp_mc)) {
-                    break;
-                }
+                if (!refresh_temp_mc(temp_sensor, &temp_mc)) break;
 
-                charge[0] = '\0';
-                if (battery_status) {
-                    read_file("/sys/class/power_supply/battery/status", charge, sizeof(charge));
-                }
+                read_battery_status(battery_status, charge, sizeof(charge));
 
                 if (!get_power_connection_state(battery_status, charge)) {
                     sync_meizu_wired_level(0, &meizu_wired_level_state);
@@ -448,59 +485,51 @@ int main(void)
                     sync_bypass_control(&bypass_state,
                                         &power_control_state,
                                         0, 0,
-                                        current_max_file,
-                                        current_max_file_num,
-                                        current_limit_file,
-                                        current_limit_file_num,
+                                        &charge_current_nodes,
                                         current_max_char);
                     last_charge_status = 0;
                     break;
                 }
 
-                if (temp_mc < lv1_mc) break;
+                if (temp_mc < temp_ctrl.lv1_mc) break;
 
-                if (read_one_option("TEMP_CTRL") != 1) {
+                if (!read_bool_option("TEMP_CTRL")) {
                     printf_with_time("温控关闭，恢复充电电流为 %s μA", current_max_char);
                     break;
                 }
 
                 sync_meizu_wired_level(1, &meizu_wired_level_state);
 
-                if (temp_mc >= max_mc) {
+                if (temp_mc >= temp_ctrl.max_mc) {
                     printf_with_time("温度 >= %d℃（第三档），停止充电", read_one_option("TEMP_MAX"));
                     charge_ctl("0");
                     while (program_running) {
                         sleep(cycle_time);
-                        simulated_temp_mc = current_simulated_temp_mc();
-                        if (simulated_temp_mc > 0) temp_mc = simulated_temp_mc;
-                        else if (!read_temp_mc(temp_sensor, &temp_mc)) break;
-                        max_mc = read_one_option("TEMP_MAX") * 1000;
-                        if (temp_mc < max_mc) {
+                        if (!refresh_temp_mc(temp_sensor, &temp_mc)) break;
+                        temp_ctrl.max_mc = read_one_option("TEMP_MAX") * 1000;
+                        if (temp_mc < temp_ctrl.max_mc) {
                             printf_with_time("温度降至 %d℃ 以下，恢复充电", read_one_option("TEMP_MAX"));
                             charge_ctl("1");
                             break;
                         }
                     }
                 } else {
-                    const char *apply_cur = (temp_mc >= lv2_mc) ? lv2_cur : lv1_cur;
-                    if (temp_mc >= lv2_mc)
-                        printf_with_time("温度 >= %d℃（第二档），限流至 %s μA", read_one_option("TEMP_LEVEL2"), lv2_cur);
-                    else
-                        printf_with_time("温度 >= %d℃（第一档），限流至 %s μA", read_one_option("TEMP_LEVEL1"), lv1_cur);
+                    int level2 = temp_mc >= temp_ctrl.lv2_mc;
+                    const char *apply_cur = level2 ? temp_ctrl.lv2_current : temp_ctrl.lv1_current;
 
-                    if (battery_capacity)
-                        read_file("/sys/class/power_supply/battery/capacity", power, sizeof(power));
+                    printf_with_time("温度 >= %d℃（%s），限流至 %s μA",
+                                     read_one_option(level2 ? "TEMP_LEVEL2" : "TEMP_LEVEL1"),
+                                     level2 ? "第二档" : "第一档",
+                                     apply_cur);
+
+                    read_battery_capacity(battery_capacity, power, sizeof(power));
 
                     apply_step_charge_policy(step_charge, power);
 
-                    if (current_max_file_num > 0)
-                        set_array_value(current_max_file, current_max_file_num, apply_cur);
-                    else {
-                        if (!logged_temp_limit_fallback) {
-                            printf_with_time("未找到电流控制文件，使用电流限制文件限制充电电流为 %s μA", apply_cur);
-                            logged_temp_limit_fallback = 1;
-                        }
-                        set_array_value(current_limit_file, current_limit_file_num, apply_cur);
+                    if (!apply_charge_current(&charge_current_nodes, apply_cur) &&
+                        !logged_temp_limit_fallback) {
+                        printf_with_time("未找到电流控制文件，使用电流限制文件限制充电电流为 %s μA", apply_cur);
+                        logged_temp_limit_fallback = 1;
                     }
                 }
 
@@ -517,10 +546,7 @@ int main(void)
                                     &power_control_state,
                                     power_stop_requested,
                                     power_bypass_requested || app_bypass_requested,
-                                    current_max_file,
-                                    current_max_file_num,
-                                    current_limit_file,
-                                    current_limit_file_num,
+                                    &charge_current_nodes,
                                     current_max_char);
 
                 if (is_bypass_active(&bypass_state) || power_control_state.stop_applied)
@@ -533,14 +559,10 @@ int main(void)
         if (current_change &&
             !is_bypass_active(&bypass_state) &&
             !power_control_state.stop_applied) {
-            if (current_max_file_num > 0)
-                set_array_value(current_max_file, current_max_file_num, current_max_char);
-            else {
-                if (!logged_limit_fallback) {
-                    printf_with_time("未找到电流控制文件，使用电流限制文件恢复充电");
-                    logged_limit_fallback = 1;
-                }
-                set_array_value(current_limit_file, current_limit_file_num, "-1");
+            if (!restore_charge_current(&charge_current_nodes, current_max_char) &&
+                !logged_limit_fallback) {
+                printf_with_time("未找到电流控制文件，使用电流限制文件恢复充电");
+                logged_limit_fallback = 1;
             }
         }
 
@@ -551,10 +573,7 @@ int main(void)
     snprintf(current_max_char, sizeof(current_max_char), "%d", read_one_option("CURRENT_MAX"));
     restore_charge_control(&bypass_state,
                            &power_control_state,
-                           current_max_file,
-                           current_max_file_num,
-                           current_limit_file,
-                           current_limit_file_num,
+                           &charge_current_nodes,
                            current_max_char);
     stop_foreground_thread();
     cleanup_battery_temp_simulation(&temp_sim_state);

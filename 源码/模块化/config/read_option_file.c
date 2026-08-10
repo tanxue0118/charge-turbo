@@ -7,6 +7,7 @@
 
 #include <errno.h>
 #include <pthread.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,6 +38,11 @@ int read_one_option(const char *name)
     return value;
 }
 
+int read_bool_option(const char *name)
+{
+    return read_one_option(name) == 1 ? 1 : 0;
+}
+
 unsigned long read_option_generation(void)
 {
     pthread_mutex_lock(&mutex_options);
@@ -46,15 +52,46 @@ unsigned long read_option_generation(void)
     return gen;
 }
 
+/* 首次读取和热重载的提示语不同，但参数完全一致，这里按 first_run 选择格式串。 */
+static void log_option_message(int first_run,
+                               const char *first_run_format,
+                               const char *reload_format,
+                               ...)
+{
+    va_list ap;
+
+    va_start(ap, reload_format);
+    vprintf_with_time(first_run ? first_run_format : reload_format, ap);
+    va_end(ap);
+}
+
+static void clamp_option_value(int first_run,
+                               const char *name,
+                               int *value,
+                               int (*clamp)(int),
+                               const char *range_text)
+{
+    int clamped = clamp(*value);
+
+    if (clamped == *value) return;
+
+    log_option_message(first_run,
+                       "%s 的值 %d 不在 %s 范围内，使用默认值 %d",
+                       "%s 的值 %d 不在 %s 范围内，改为 %d",
+                       name, *value, range_text, clamped);
+
+    *value = clamped;
+}
+
 static void load_option_file(int first_run)
 {
     FILE *fp = fopen(option_file, "r");
 
     if (!fp) {
-        if (first_run)
-            printf_with_time("无法打开配置文件 %s，使用默认配置", option_file);
-        else
-            printf_with_time("无法打开配置文件 %s，沿用上一次配置", option_file);
+        log_option_message(first_run,
+                           "无法打开配置文件 %s，使用默认配置",
+                           "无法打开配置文件 %s，沿用上一次配置",
+                           option_file);
         return;
     }
 
@@ -66,12 +103,8 @@ static void load_option_file(int first_run)
     pthread_mutex_lock(&mutex_options);
 
     while (fgets(line, sizeof(line), fp)) {
-        line_feed(line);
-
-        char *p = line;
-        while (*p == ' ' || *p == '\t') p++;
-
-        if (*p == '\0' || *p == '#') continue;
+        char *p = trim_config_line(line);
+        if (!p) continue;
 
         char *eq = strchr(p, '=');
         if (!eq) continue;
@@ -88,53 +121,29 @@ static void load_option_file(int first_run)
         int new_value = 0;
 
         if (!parse_non_negative_int(value_str, &new_value)) {
-            if (first_run)
-                printf_with_time("配置文件 %s 的值为空、非纯数字或超过范围，使用默认值 %d",
-                                 options[idx].name, options[idx].value);
-            else
-                printf_with_time("%s 的值非法，沿用上一次的值 %d",
-                                 options[idx].name, options[idx].value);
+            log_option_message(first_run,
+                               "配置文件 %s 的值为空、非纯数字或超过范围，使用默认值 %d",
+                               "%s 的值非法，沿用上一次的值 %d",
+                               options[idx].name, options[idx].value);
             continue;
         }
 
         if (strcmp(options[idx].name, "CYCLE_TIME") == 0 && new_value == 0) {
-            if (first_run)
-                printf_with_time("CYCLE_TIME 的值为 0，这是不允许的，使用默认值 %d",
-                                 options[idx].value);
-            else
-                printf_with_time("CYCLE_TIME 的值为 0，这是不允许的，沿用上一次的值 %d",
-                                 options[idx].value);
+            log_option_message(first_run,
+                               "CYCLE_TIME 的值为 0，这是不允许的，使用默认值 %d",
+                               "CYCLE_TIME 的值为 0，这是不允许的，沿用上一次的值 %d",
+                               options[idx].value);
             continue;
         }
 
         if (strcmp(options[idx].name, "MEIZU_CHARGE_LEVEL") == 0) {
-            int clamped = clamp_meizu_charge_level(new_value);
-            if (clamped != new_value) {
-                if (first_run)
-                    printf_with_time("MEIZU_CHARGE_LEVEL 的值 %d 不在 1-10 范围内，使用默认值 %d",
-                                     new_value,
-                                     clamped);
-                else
-                    printf_with_time("MEIZU_CHARGE_LEVEL 的值 %d 不在 1-10 范围内，改为 %d",
-                                     new_value,
-                                     clamped);
-                new_value = clamped;
-            }
+            clamp_option_value(first_run, options[idx].name, &new_value,
+                               clamp_meizu_charge_level, "1-10");
         }
 
         if (strcmp(options[idx].name, "MEIZU_THERMAL_SCHEME") == 0) {
-            int clamped = clamp_meizu_thermal_scheme(new_value);
-            if (clamped != new_value) {
-                if (first_run)
-                    printf_with_time("MEIZU_THERMAL_SCHEME 的值 %d 不在 1-2 范围内，使用默认值 %d",
-                                     new_value,
-                                     clamped);
-                else
-                    printf_with_time("MEIZU_THERMAL_SCHEME 的值 %d 不在 1-2 范围内，改为 %d",
-                                     new_value,
-                                     clamped);
-                new_value = clamped;
-            }
+            clamp_option_value(first_run, options[idx].name, &new_value,
+                               clamp_meizu_thermal_scheme, "1-2");
         }
 
         if (new_value != 0 && new_value != 1) {
@@ -154,12 +163,10 @@ static void load_option_file(int first_run)
 
     for (int i = 0; i < option_count; i++) {
         if (!found[i]) {
-            if (first_run)
-                printf_with_time("配置文件中不存在 %s，使用默认值 %d",
-                                 options[i].name, options[i].value);
-            else
-                printf_with_time("配置文件中不存在 %s，沿用上一次的值 %d",
-                                 options[i].name, options[i].value);
+            log_option_message(first_run,
+                               "配置文件中不存在 %s，使用默认值 %d",
+                               "配置文件中不存在 %s，沿用上一次的值 %d",
+                               options[i].name, options[i].value);
         }
     }
 
@@ -168,6 +175,18 @@ static void load_option_file(int first_run)
     pthread_mutex_unlock(&mutex_options);
 
     fclose(fp);
+}
+
+static int watch_option_dir(int fd)
+{
+    return inotify_add_watch(fd,
+                             option_dir,
+                             IN_CLOSE_WRITE |
+                             IN_MOVED_TO |
+                             IN_CREATE |
+                             IN_ATTRIB |
+                             IN_DELETE_SELF |
+                             IN_MOVE_SELF);
 }
 
 static int is_option_event(struct inotify_event *ev)
@@ -205,14 +224,7 @@ void *read_option_file_thread(void *arg)
         return NULL;
     }
 
-    int wd = inotify_add_watch(fd,
-                               option_dir,
-                               IN_CLOSE_WRITE |
-                               IN_MOVED_TO |
-                               IN_CREATE |
-                               IN_ATTRIB |
-                               IN_DELETE_SELF |
-                               IN_MOVE_SELF);
+    int wd = watch_option_dir(fd);
 
     if (wd < 0) {
         printf_with_time("inotify 监听目录失败：%s，目录：%s", strerror(errno), option_dir);
@@ -268,14 +280,7 @@ void *read_option_file_thread(void *arg)
         if (need_rewatch) {
             inotify_rm_watch(fd, wd);
 
-            wd = inotify_add_watch(fd,
-                                   option_dir,
-                                   IN_CLOSE_WRITE |
-                                   IN_MOVED_TO |
-                                   IN_CREATE |
-                                   IN_ATTRIB |
-                                   IN_DELETE_SELF |
-                                   IN_MOVE_SELF);
+            wd = watch_option_dir(fd);
 
             if (wd < 0) {
                 printf_with_time("重新添加 inotify 监听失败：%s", strerror(errno));

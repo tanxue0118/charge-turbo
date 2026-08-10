@@ -3,6 +3,7 @@
 #include "global.h"
 #include "file_utils.h"
 #include "printf_with_time.h"
+#include "str_array.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -24,6 +25,36 @@ void line_feed(char *line)
 
     p = strchr(line, '\n');
     if (p) *p = '\0';
+}
+
+const char *path_basename(const char *path)
+{
+    if (!path) return NULL;
+
+    const char *slash = strrchr(path, '/');
+
+    return slash ? slash + 1 : path;
+}
+
+void join_path(char *out, size_t out_size, const char *dir, const char *name)
+{
+    if (!out || out_size == 0) return;
+
+    snprintf(out, out_size, "%s/%s", dir ? dir : "", name ? name : "");
+}
+
+char *trim_config_line(char *line)
+{
+    if (!line) return NULL;
+
+    line_feed(line);
+
+    char *p = line;
+    while (*p == ' ' || *p == '\t') p++;
+
+    if (*p == '\0' || *p == '#') return NULL;
+
+    return p;
 }
 
 int file_exists(const char *file)
@@ -103,71 +134,32 @@ int run_shell_command(const char *cmd)
     return status;
 }
 
-void free_string_array(char ***arr, int num)
-{
-    if (!arr || !*arr) return;
-
-    for (int i = 0; i < num; i++) {
-        free((*arr)[i]);
-        (*arr)[i] = NULL;
-    }
-
-    free(*arr);
-    *arr = NULL;
-}
-
 int list_dir(const char *path, char ***out)
 {
     if (!path || !out) return 0;
 
+    *out = NULL;
+
     DIR *dir = opendir(path);
-    if (!dir) {
-        *out = NULL;
-        return 0;
-    }
+    if (!dir) return 0;
 
-    int count = 0;
-    int cap = 16;
-    char **list = calloc(cap, sizeof(char *));
-
-    if (!list) {
-        closedir(dir);
-        *out = NULL;
-        return 0;
-    }
+    StrArray entries;
+    str_array_init(&entries);
 
     struct dirent *ent;
 
     while ((ent = readdir(dir)) != NULL) {
         if (!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, "..")) continue;
 
-        if (count >= cap) {
-            cap *= 2;
-            char **tmp = realloc(list, sizeof(char *) * cap);
-            if (!tmp) break;
-            list = tmp;
-        }
+        char child[PATH_MAX] = {0};
+        join_path(child, sizeof(child), path, ent->d_name);
 
-        size_t len = strlen(path) + strlen(ent->d_name) + 2;
-        list[count] = calloc(1, len);
-        if (!list[count]) break;
-
-        snprintf(list[count], len, "%s/%s", path, ent->d_name);
-        count++;
+        if (!str_array_push(&entries, child)) break;
     }
 
     closedir(dir);
 
-    if (count == 0) {
-        free(list);
-        list = NULL;
-    } else {
-        char **tmp = realloc(list, sizeof(char *) * count);
-        if (tmp) list = tmp;
-    }
-
-    *out = list;
-    return count;
+    return str_array_take(&entries, out);
 }
 
 int parse_non_negative_int(const char *str, int *out)
@@ -210,6 +202,11 @@ int contains_ignore_case(const char *s, const char *sub)
     return 0;
 }
 
+int equals_ignore_case(const char *left, const char *right)
+{
+    return left && right && strcasecmp(left, right) == 0;
+}
+
 int ends_with(const char *s, const char *suffix)
 {
     if (!s || !suffix) return 0;
@@ -250,7 +247,7 @@ static int is_path_mounted(const char *target)
     char resolved[PATH_MAX] = {0};
     resolve_mount_target(target, resolved, sizeof(resolved));
 
-    FILE *fp = fopen("/proc/self/mountinfo", "r");
+    FILE *fp = fopen(MOUNTINFO_PATH, "r");
     if (!fp) return 0;
 
     char line[4096];
