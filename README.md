@@ -1,5 +1,7 @@
 # 充电优化模块（Charge Turbo）
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/tanxue0118/charge-turbo)
+
 面向 Android Root 设备的充电控制与温控管理模块，模块 ID 为 `turbo-charge`。本仓库在原项目基础上持续维护，增加了三档温度控制、电量停止充电、旁路供电、魅族适配、温控路径扩展和 WebUI 等功能。
 
 > [!CAUTION]
