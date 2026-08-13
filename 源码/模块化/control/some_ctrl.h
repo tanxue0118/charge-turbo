@@ -6,8 +6,8 @@
 void handle_meizu_generation_change(int *last_meizu_thermal_key,
                                     MountModeState *thermal_mount_state,
                                     int is_charging);
-void step_charge_ctl(const char *value);
-void charge_ctl(const char *value);
+int step_charge_ctl(const char *value);
+int charge_ctl(const char *value);
 void restore_meizu_wired_level(MeizuWiredLevelState *state);
 void sync_meizu_wired_level(int is_charging, MeizuWiredLevelState *state);
 int read_external_power_state(void);
@@ -37,6 +37,6 @@ void restore_charge_control(BypassState *bypass_state,
                             int current_limit_file_num,
                             const char *normal_current);
 int is_bypass_active(const BypassState *state);
-void apply_step_charge_policy(uchar step_charge, const char *power);
+int apply_step_charge_policy(uchar step_charge, const char *power, int power_valid);
 
 #endif

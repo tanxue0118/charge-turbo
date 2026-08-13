@@ -44,7 +44,11 @@ function initKsu() {
       }
     });
     toastNative = (msg) => {
-      try { window.ksu.toast(msg); } catch (e) {}
+      try {
+        window.ksu.toast(msg);
+      } catch (e) {
+        console.warn('ksu.toast 调用失败', e);
+      }
     };
   } else {
     exec = async () => ({ errno: 1, stdout: '', stderr: 'ksu unavailable' });
@@ -68,11 +72,17 @@ function renderIcons() {
 }
 
 async function sh(cmd) { return await exec(cmd); }
-async function shOut(cmd) { const { stdout } = await sh(cmd); return stdout || ''; }
 
 async function readFile(path) {
-  const { errno, stdout } = await sh(`cat '${path}' 2>/dev/null`);
-  if (errno !== 0) return '';
+  const { errno, stdout, stderr } = await sh(`cat '${path}'`);
+  if (errno !== 0) throw new Error((stderr || '').trim() || `读取 ${path} 失败`);
+  return stdout;
+}
+
+// 节点读不到时返回 null，避免把失败当成 0 显示
+async function readNode(path) {
+  const { errno, stdout } = await sh(`cat '${path}'`);
+  if (errno !== 0) return null;
   return stdout;
 }
 
@@ -258,18 +268,21 @@ function switchPage(p, el) {
 }
 
 async function loadCfg() {
+  let text = '';
+
   try {
-    const text = await readFile(CONFIG);
-    if (text) {
-      text.split('\n').forEach(line => {
-        line = line.trim();
-        if (line && !line.startsWith('#')) {
-          const match = line.match(/^(\w+)=(\d+)$/);
-          if (match) cfg[match[1]] = parseInt(match[2]);
-        }
-      });
+    text = await readFile(CONFIG);
+  } catch (e) {
+    toast('读取配置失败，界面显示的是默认值：' + e.message);
+  }
+
+  text.split('\n').forEach(line => {
+    line = line.trim();
+    if (line && !line.startsWith('#')) {
+      const match = line.match(/^(\w+)=(\d+)$/);
+      if (match) cfg[match[1]] = parseInt(match[2]);
     }
-  } catch (e) {}
+  });
 
   if (cfg.MEIZU_CHARGE_LEVEL < 1 || cfg.MEIZU_CHARGE_LEVEL > 10) cfg.MEIZU_CHARGE_LEVEL = 10;
   if (cfg.MEIZU_THERMAL_SCHEME < 1 || cfg.MEIZU_THERMAL_SCHEME > 2) cfg.MEIZU_THERMAL_SCHEME = 2;
@@ -307,18 +320,28 @@ async function loadCfg() {
 async function refresh() {
   try {
     const [cap, status, temp, volt, cur] = await Promise.all([
-      shOut('cat /sys/class/power_supply/battery/capacity'),
-      shOut('cat /sys/class/power_supply/battery/status'),
-      shOut('cat /sys/class/power_supply/battery/temp'),
-      shOut('cat /sys/class/power_supply/battery/voltage_now'),
-      shOut('cat /sys/class/power_supply/battery/current_now')
+      readNode('/sys/class/power_supply/battery/capacity'),
+      readNode('/sys/class/power_supply/battery/status'),
+      readNode('/sys/class/power_supply/battery/temp'),
+      readNode('/sys/class/power_supply/battery/voltage_now'),
+      readNode('/sys/class/power_supply/battery/current_now')
     ]);
 
-    st.lv = parseInt(cap) || 0;
+    if (status === null && cap === null && temp === null) {
+      // 节点全部读不到时保留上一次数值，并在界面上说明原因
+      st.status = '读取失败';
+      reportRefreshFailure('无法读取电池节点，请确认已授予 root 权限');
+      updateUI();
+      return;
+    }
+
+    refreshFailureReported = false;
+
+    if (cap !== null) st.lv = parseInt(cap) || 0;
     const s = (status || '').trim();
-    st.status = s === 'Charging' ? '充电中' : s === 'Discharging' ? '放电中' : s === 'Full' ? '已充满' : s;
-    st.tmp = (parseInt(temp) || 0) / 10;
-    st.volt = (parseInt(volt) || 0) / 1000000;
+    st.status = s === 'Charging' ? '充电中' : s === 'Discharging' ? '放电中' : s === 'Full' ? '已充满' : (s || '未知');
+    if (temp !== null) st.tmp = (parseInt(temp) || 0) / 10;
+    if (volt !== null) st.volt = (parseInt(volt) || 0) / 1000000;
 
     let curUA = parseInt(cur) || 0;
     if (curUA !== 0 && Math.abs(curUA) < 50000) curUA *= 1000;
@@ -329,8 +352,20 @@ async function refresh() {
 
     st.pwr = st.inp > 0 ? st.inp * st.volt : st.out * st.volt;
     updateChartData();
-  } catch (err) {}
+  } catch (err) {
+    reportRefreshFailure('刷新电池状态失败：' + (err && err.message ? err.message : err));
+  }
   updateUI();
+}
+
+let refreshFailureReported = false;
+
+// 刷新每秒执行，同一种失败只提示一次，但不能完全吞掉
+function reportRefreshFailure(msg) {
+  console.warn(msg);
+  if (refreshFailureReported) return;
+  refreshFailureReported = true;
+  toast(msg);
 }
 
 function updateChartData() {
@@ -545,22 +580,46 @@ function drawChart() {
   ctx.fillText(curVal.toFixed(2) + 'A', w - padding.right, 13);
 }
 
-async function saveOneCfg(key, value) {
-  const text = await readFile(CONFIG);
-  const lines = text.split('\n');
-  let found = false;
-  const out = lines.map(line => {
-    const m = line.match(/^(\w+)=/);
-    if (m && m[1] === key) { found = true; return key + '=' + value; }
-    return line;
-  });
-  if (!found) out.push(key + '=' + value);
+// 读不到现有配置时必须放弃写入，否则会把整个配置文件覆盖成只包含本次修改的一行
+async function saveCfgValues(entries) {
+  let text;
+
+  try {
+    text = await readFile(CONFIG);
+  } catch (e) {
+    toast('保存失败，无法读取现有配置：' + e.message);
+    return false;
+  }
+
+  let out = text.split('\n');
+
+  for (const [key, value] of entries) {
+    let found = false;
+    out = out.map(line => {
+      const m = line.match(/^(\w+)=/);
+      if (m && m[1] === key) { found = true; return key + '=' + value; }
+      return line;
+    });
+    if (!found) out.push(key + '=' + value);
+  }
+
   try {
     await writeFile(CONFIG, out.join('\n'));
-    toast('已保存');
   } catch (e) {
-    toast('保存失败');
+    toast('保存失败：' + e.message);
+    return false;
   }
+
+  return true;
+}
+
+async function saveOneCfg(key, value) {
+  if (await saveCfgValues([[key, value]])) {
+    toast('已保存');
+    return true;
+  }
+
+  return false;
 }
 
 async function toggleSw(k) {
@@ -573,7 +632,10 @@ async function toggleSw(k) {
 async function refreshLog() {
   const box = document.getElementById('log-box');
   try {
-    const text = await shOut(`tail -50 '${LOG}'`);
+    const { errno, stdout, stderr } = await sh(`tail -50 '${LOG}'`);
+    if (errno !== 0) throw new Error((stderr || '').trim() || `读取 ${LOG} 失败`);
+
+    const text = stdout || '';
     if (text && text.trim()) {
       const lines = text.split('\n').filter(x => x.trim());
       box.innerHTML = lines.map(x => {
@@ -589,17 +651,19 @@ async function refreshLog() {
       box.innerHTML = '<div style="text-align:center;color:var(--text-3)">暂无日志</div>';
     }
   } catch (e) {
-    box.innerHTML = '<div style="color:var(--fail)">读取日志失败</div>';
+    box.innerHTML = `<div style="color:var(--fail)">读取日志失败：${e.message}</div>`;
   }
 }
 
 async function clearLog() {
   try {
-    await sh(`: > '${LOG}'`);
+    const { errno, stderr } = await sh(`: > '${LOG}'`);
+    if (errno !== 0) throw new Error((stderr || '').trim() || '清空日志失败');
+
     document.getElementById('log-box').innerHTML = '<div style="text-align:center;color:var(--text-3)">已清空</div>';
     toast('日志已清空');
   } catch (e) {
-    toast('清空失败');
+    toast('清空失败：' + e.message);
   }
 }
 
@@ -618,16 +682,12 @@ async function resetCfg() {
     MEIZU_DEVICE: 0, MEIZU_CHARGE_LEVEL: 10, MEIZU_THERMAL_SCHEME: 2,
     BYPASS_CHARGE: 0
   };
+  // 一次写入全部默认值，避免中途失败时只写进一半
+  if (!await saveCfgValues(Object.entries(defaults))) return;
+
   Object.assign(cfg, defaults);
-  try {
-    for (const [k, v] of Object.entries(defaults)) {
-      await saveOneCfg(k, v);
-    }
-    await loadCfg();
-    toast('已恢复默认配置');
-  } catch (e) {
-    toast('恢复失败');
-  }
+  await loadCfg();
+  toast('已恢复默认配置');
 }
 
 document.addEventListener('DOMContentLoaded', init);

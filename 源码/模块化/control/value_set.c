@@ -5,17 +5,27 @@
 #include "printf_with_time.h"
 #include "value_set.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-void set_value(const char *file, const char *value)
+#define WRITE_NODE_ACTION "写入节点"
+
+static int report_write_failure(const char *file, int errnum)
 {
-    if (!file || !value) return;
-    if (!file_exists(file)) return;
+    log_io_failure(WRITE_NODE_ACTION, file, errnum);
+
+    return SET_VALUE_FAILED;
+}
+
+int set_value(const char *file, const char *value)
+{
+    if (!file || !value) return SET_VALUE_SKIPPED;
+    if (!file_exists(file)) return SET_VALUE_SKIPPED;
 
     struct stat statbuf;
-    if (stat(file, &statbuf) != 0) return;
+    if (stat(file, &statbuf) != 0) return report_write_failure(file, errno);
 
     FILE *fp = fopen(file, "r+");
 
@@ -24,32 +34,60 @@ void set_value(const char *file, const char *value)
         fp = fopen(file, "r+");
     }
 
-    if (!fp) return;
+    if (!fp) return report_write_failure(file, errno);
 
     char *old = calloc(1, statbuf.st_size + 1);
-    if (!old) { fclose(fp); return; }
+    if (!old) {
+        fclose(fp);
+        return report_write_failure(file, ENOMEM);
+    }
 
     if (fgets(old, statbuf.st_size + 1, fp)) {
         line_feed(old);
     }
 
+    int result = SET_VALUE_OK;
+
     if (strcmp(old, value) != 0) {
         rewind(fp);
-        fputs(value, fp);
-        fflush(fp);
+        errno = 0;
+
+        if (fputs(value, fp) < 0 || fflush(fp) != 0) {
+            result = report_write_failure(file, errno ? errno : EIO);
+        }
     }
 
     free(old);
-    fclose(fp);
+    errno = 0;
+
+    if (fclose(fp) != 0 && result == SET_VALUE_OK) {
+        result = report_write_failure(file, errno ? errno : EIO);
+    }
+
+    if (result == SET_VALUE_OK) clear_io_failure(WRITE_NODE_ACTION, file);
+
+    return result;
 }
 
-void set_array_value(char **files, int num, const char *value)
+int set_array_value(char **files, int num, const char *value)
 {
-    if (!files || num <= 0 || !value) return;
+    if (!files || num <= 0 || !value) return SET_VALUE_SKIPPED;
+
+    int ok = 0;
+    int failed = 0;
 
     for (int i = 0; i < num; i++) {
-        if (files[i]) set_value(files[i], value);
+        if (!files[i]) continue;
+
+        int result = set_value(files[i], value);
+        if (result == SET_VALUE_OK) ok++;
+        else if (result == SET_VALUE_FAILED) failed++;
     }
+
+    if (ok > 0) return SET_VALUE_OK;
+    if (failed > 0) return SET_VALUE_FAILED;
+
+    return SET_VALUE_SKIPPED;
 }
 
 static int write_meizu_wired_level_node_with_echo(const char *path, int level)

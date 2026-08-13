@@ -127,6 +127,7 @@ static void discover_battery_temp_nodes(TempSimState *st)
         snprintf(type_path, sizeof(type_path), "%s/type", ps_dirs[i]);
         snprintf(temp_path, sizeof(temp_path), "%s/temp", ps_dirs[i]);
 
+        /* type 读不到时仍可以根据目录名判断，因此不作为错误处理。 */
         read_file(type_path, type, sizeof(type));
 
         int is_batt =
@@ -193,7 +194,7 @@ static int restore_battery_temp_nodes(TempSimState *st)
         TempFakeNode *n = &st->nodes[i];
 
         if (n->mounted) {
-            if (unbind_mount_file(n->target)) {
+            if (unbind_mount_file(n->target) > 0) {
                 restored++;
             }
             n->mounted = 0;
@@ -321,6 +322,13 @@ int apply_battery_temp_simulation(TempSimState *st, int is_charging)
     if (st->last_simulating != 1 || st->last_value != value) {
         printf_with_time("温度模拟已开启，目标温度 %d℃，成功生效 %d/%d 个节点，其中挂载兜底 %d 个",
                          value, ok, st->count, mounted);
+    }
+
+    if (ok == 0 && st->last_sim_all_failed != 1) {
+        printf_with_time("温度模拟所有节点写入与挂载均失败，伪装温度未生效");
+        st->last_sim_all_failed = 1;
+    } else if (ok > 0) {
+        st->last_sim_all_failed = 0;
     }
 
     st->last_value = value;

@@ -13,8 +13,68 @@
 #include <string.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
+#include <stdint.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#define IO_FAILURE_MEMO_MAX 128
+
+typedef struct {
+    uint64_t key;
+    int errnum;
+} IoFailureMemo;
+
+static IoFailureMemo io_failure_memo[IO_FAILURE_MEMO_MAX];
+static int io_failure_memo_count = 0;
+
+static uint64_t io_failure_key(const char *action, const char *path)
+{
+    uint64_t hash = 1469598103934665603ULL;
+
+    for (const char *p = action; p && *p; p++) hash = (hash ^ (unsigned char)*p) * 1099511628211ULL;
+    for (const char *p = path; p && *p; p++) hash = (hash ^ (unsigned char)*p) * 1099511628211ULL;
+
+    return hash;
+}
+
+static IoFailureMemo *find_io_failure_memo(uint64_t key)
+{
+    for (int i = 0; i < io_failure_memo_count; i++) {
+        if (io_failure_memo[i].key == key) return &io_failure_memo[i];
+    }
+
+    return NULL;
+}
+
+/* 同一操作在同一路径上反复失败时，只在首次或错误码变化时记录，避免每个循环刷日志。 */
+void log_io_failure(const char *action, const char *path, int errnum)
+{
+    if (!action || !path) return;
+
+    uint64_t key = io_failure_key(action, path);
+    IoFailureMemo *memo = find_io_failure_memo(key);
+
+    if (memo) {
+        if (memo->errnum == errnum) return;
+        memo->errnum = errnum;
+    } else if (io_failure_memo_count < IO_FAILURE_MEMO_MAX) {
+        memo = &io_failure_memo[io_failure_memo_count++];
+        memo->key = key;
+        memo->errnum = errnum;
+    }
+
+    printf_with_time("%s失败：%s，原因：%s", action, path, strerror(errnum));
+}
+
+void clear_io_failure(const char *action, const char *path)
+{
+    if (!action || !path) return;
+
+    IoFailureMemo *memo = find_io_failure_memo(io_failure_key(action, path));
+    if (!memo) return;
+
+    *memo = io_failure_memo[--io_failure_memo_count];
+}
+
 void line_feed(char *line)
 {
     if (!line) return;
@@ -69,11 +129,18 @@ int read_file(const char *file_path, char *buf, size_t buf_size)
     return 1;
 }
 
-void ensure_dir(const char *dir)
+int ensure_dir(const char *dir)
 {
-    if (!dir) return;
-    mkdir(dir, 0755);
+    if (!dir) return 0;
+
+    if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
+        log_io_failure("创建目录", dir, errno);
+        return 0;
+    }
+
+    clear_io_failure("创建目录", dir);
     chmod(dir, 0755);
+    return 1;
 }
 
 void resolve_mount_target(const char *path, char *out, size_t out_size)
@@ -142,15 +209,22 @@ int list_dir(const char *path, char ***out)
         if (!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, "..")) continue;
 
         if (count >= cap) {
-            cap *= 2;
-            char **tmp = realloc(list, sizeof(char *) * cap);
-            if (!tmp) break;
+            int new_cap = cap * 2;
+            char **tmp = realloc(list, sizeof(char *) * new_cap);
+            if (!tmp) {
+                printf_with_time("内存不足，目录 %s 只读取了 %d 项", path, count);
+                break;
+            }
             list = tmp;
+            cap = new_cap;
         }
 
         size_t len = strlen(path) + strlen(ent->d_name) + 2;
         list[count] = calloc(1, len);
-        if (!list[count]) break;
+        if (!list[count]) {
+            printf_with_time("内存不足，目录 %s 只读取了 %d 项", path, count);
+            break;
+        }
 
         snprintf(list[count], len, "%s/%s", path, ent->d_name);
         count++;
@@ -229,18 +303,33 @@ int write_text_file(const char *path, const char *text)
     int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
 
     if (fd < 0) {
+        log_io_failure("打开文件", path, errno);
         return 0;
     }
 
     size_t len = strlen(text);
     ssize_t ret = write(fd, text, len);
+    int write_errno = ret == (ssize_t)len ? 0 : errno;
 
-    fsync(fd);
-    close(fd);
+    /* sysfs 节点不支持 fsync，只有常规文件的 fsync 失败才算写入失败。 */
+    if (fsync(fd) != 0 && errno != EINVAL && errno != EROFS && errno != ENOTSUP) {
+        if (!write_errno) write_errno = errno;
+    }
+
+    /* 部分内核驱动只在 close 时报告写入错误。 */
+    if (close(fd) != 0 && !write_errno) write_errno = errno;
 
     chmod(path, 0644);
 
-    return ret == (ssize_t)len;
+    if (write_errno) {
+        log_io_failure("写入文件", path, write_errno);
+        return 0;
+    }
+
+    clear_io_failure("打开文件", path);
+    clear_io_failure("写入文件", path);
+
+    return 1;
 }
 
 static int is_path_mounted(const char *target)
@@ -304,15 +393,21 @@ int bind_mount_file(const char *fake, const char *target)
         return 1;
     }
 
+    int mount_errno = errno;
+
     if (strcmp(resolved, target) != 0) {
         if (mount(fake, target, NULL, MS_BIND, NULL) == 0) {
             return 1;
         }
+        mount_errno = errno;
     }
+
+    log_io_failure("bind 挂载", resolved, mount_errno);
 
     return 0;
 }
 
+/* 返回卸载成功的次数，0 表示本来就没有挂载，-1 表示卸载失败。 */
 int unbind_mount_file(const char *target)
 {
     if (!target || !*target) return 0;
@@ -321,6 +416,9 @@ int unbind_mount_file(const char *target)
     resolve_mount_target(target, resolved, sizeof(resolved));
 
     int count = 0;
+    int failed = 0;
+
+    clear_io_failure("bind 挂载", resolved);
 
     for (int i = 0; i < 16; i++) {
         int did = 0;
@@ -331,6 +429,7 @@ int unbind_mount_file(const char *target)
                 did = 1;
                 usleep(50000);
             } else {
+                failed = 1;
                 printf_with_time("解除真实温度节点挂载失败：%s，原因：%s",
                                  resolved,
                                  strerror(errno));
@@ -343,6 +442,7 @@ int unbind_mount_file(const char *target)
                 did = 1;
                 usleep(50000);
             } else {
+                failed = 1;
                 printf_with_time("解除温度节点挂载失败：%s，原因：%s",
                                  target,
                                  strerror(errno));
@@ -353,6 +453,8 @@ int unbind_mount_file(const char *target)
             break;
         }
     }
+
+    if (count == 0 && failed) return -1;
 
     return count;
 }

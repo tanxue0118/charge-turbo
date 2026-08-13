@@ -47,26 +47,74 @@ void handle_meizu_generation_change(int *last_meizu_thermal_key,
     sync_thermal_mount_mode(is_charging, thermal_mount_state);
 }
 
-void step_charge_ctl(const char *value)
+/* 汇总一组节点的写入结果：任一成功即视为生效，全部失败才算失败。 */
+static void tally_set_value(const char *path, const char *value, int *ok, int *failed)
 {
-    set_value("/sys/class/power_supply/battery/step_charging_enabled", value);
-    set_value("/sys/class/power_supply/battery/sw_jeita_enabled", value);
+    int result = set_value(path, value);
+
+    if (result == SET_VALUE_OK) (*ok)++;
+    else if (result == SET_VALUE_FAILED) (*failed)++;
 }
 
-void charge_ctl(const char *value)
+int step_charge_ctl(const char *value)
 {
-    set_value("/sys/class/power_supply/battery/charging_enabled", value);
-    set_value("/sys/class/power_supply/battery/battery_charging_enabled", value);
+    static int last_logged_state = -1;
 
-    if (atoi(value)) {
-        set_value("/sys/class/power_supply/battery/input_suspend", "0");
-        set_value("/sys/class/qcom-battery/restricted_charging", "0");
-        set_value("/sys/class/qcom-battery/restrict_chg", "0");
-    } else {
-        set_value("/sys/class/power_supply/battery/input_suspend", "1");
-        set_value("/sys/class/qcom-battery/restricted_charging", "1");
-        set_value("/sys/class/qcom-battery/restrict_chg", "1");
+    int ok = 0;
+    int failed = 0;
+
+    tally_set_value("/sys/class/power_supply/battery/step_charging_enabled", value, &ok, &failed);
+    tally_set_value("/sys/class/power_supply/battery/sw_jeita_enabled", value, &ok, &failed);
+
+    int applied = ok > 0;
+
+    if (!applied && failed > 0) {
+        if (last_logged_state != 0) {
+            printf_with_time("阶梯式充电节点写入失败，阶梯充电控制未生效");
+            last_logged_state = 0;
+        }
+    } else if (applied) {
+        if (last_logged_state == 0)
+            printf_with_time("阶梯式充电节点已恢复可写");
+        last_logged_state = 1;
     }
+
+    return applied;
+}
+
+int charge_ctl(const char *value)
+{
+    static int last_logged_state = -1;
+
+    int ok = 0;
+    int failed = 0;
+    const char *suspend_value = atoi(value) ? "0" : "1";
+
+    tally_set_value("/sys/class/power_supply/battery/charging_enabled", value, &ok, &failed);
+    tally_set_value("/sys/class/power_supply/battery/battery_charging_enabled", value, &ok, &failed);
+    tally_set_value("/sys/class/power_supply/battery/input_suspend", suspend_value, &ok, &failed);
+    tally_set_value("/sys/class/qcom-battery/restricted_charging", suspend_value, &ok, &failed);
+    tally_set_value("/sys/class/qcom-battery/restrict_chg", suspend_value, &ok, &failed);
+
+    int applied = ok > 0;
+
+    if (!applied) {
+        if (last_logged_state != 0) {
+            if (failed > 0)
+                printf_with_time("充电开关节点写入失败，%s充电未生效，将在下个循环重试",
+                                 atoi(value) ? "恢复" : "停止");
+            else
+                printf_with_time("找不到可用的充电开关节点，%s充电未生效",
+                                 atoi(value) ? "恢复" : "停止");
+            last_logged_state = 0;
+        }
+    } else {
+        if (last_logged_state == 0)
+            printf_with_time("充电开关节点已恢复可写");
+        last_logged_state = 1;
+    }
+
+    return applied;
 }
 
 void restore_meizu_wired_level(MeizuWiredLevelState *state)
@@ -163,6 +211,7 @@ void sync_meizu_wired_level(int is_charging, MeizuWiredLevelState *state)
 static char *external_power_nodes[EXTERNAL_POWER_NODE_MAX];
 static int external_power_node_count = 0;
 static int external_power_nodes_discovered = 0;
+static int logged_missing_external_power_nodes = 0;
 
 static int is_battery_power_supply(const char *dir)
 {
@@ -207,11 +256,18 @@ static void discover_external_power_nodes(void)
             external_power_nodes[external_power_node_count] = strdup(path);
             if (external_power_nodes[external_power_node_count]) {
                 external_power_node_count++;
+            } else {
+                printf_with_time("内存不足，无法记录外部供电节点：%s", path);
             }
         }
     }
 
     free_string_array(&power_supply_dirs, dir_num);
+
+    if (external_power_node_count == 0 && !logged_missing_external_power_nodes) {
+        printf_with_time("未找到外部供电节点（present/online），将仅依靠 battery/status 判断充电器连接状态");
+        logged_missing_external_power_nodes = 1;
+    }
 }
 
 int read_external_power_state(void)
@@ -808,15 +864,14 @@ void sync_bypass_control(BypassState *bypass_state,
             if (bypass_still_active) {
                 printf_with_time("硬件旁路暂未恢复原值，仍优先执行停止充电");
             }
-            charge_ctl("0");
-            power_state->stop_applied = 1;
+            /* 写入失败时不置位状态，下个循环会继续尝试停止充电。 */
+            power_state->stop_applied = charge_ctl("0");
         }
         return;
     }
 
     if (power_state->stop_applied) {
-        charge_ctl("1");
-        power_state->stop_applied = 0;
+        if (charge_ctl("1")) power_state->stop_applied = 0;
     }
 
     sync_bypass_supply(bypass_state, bypass_requested,
@@ -852,26 +907,43 @@ void restore_charge_control(BypassState *bypass_state,
     }
 
     if (power_state && power_state->stop_applied) {
-        charge_ctl("1");
-        power_state->stop_applied = 0;
+        if (charge_ctl("1")) {
+            power_state->stop_applied = 0;
+        } else {
+            printf_with_time("退出时无法恢复充电开关节点，请在下次运行前确认节点可写");
+        }
     }
 }
 
-void apply_step_charge_policy(uchar step_charge, const char *power)
+int apply_step_charge_policy(uchar step_charge, const char *power, int power_valid)
 {
+    static int logged_missing_capacity = 0;
+
     if (step_charge == 1) {
-        if (read_one_option("STEP_CHARGING_DISABLED") == 1) {
-            if (atoi(power) < read_one_option("STEP_CHARGING_DISABLED_THRESHOLD"))
-                step_charge_ctl("1");
-            else
-                step_charge_ctl("0");
-        } else {
-            step_charge_ctl("1");
+        if (read_one_option("STEP_CHARGING_DISABLED") != 1) return step_charge_ctl("1");
+
+        if (!power_valid) {
+            if (!logged_missing_capacity) {
+                printf_with_time("电量读取失败，本次跳过按电量的阶梯式充电控制");
+                logged_missing_capacity = 1;
+            }
+            return 0;
         }
-    } else if (step_charge == 2) {
-        if (read_one_option("STEP_CHARGING_DISABLED") == 1)
-            step_charge_ctl("0");
-        else
-            step_charge_ctl("1");
+
+        logged_missing_capacity = 0;
+
+        if (atoi(power) < read_one_option("STEP_CHARGING_DISABLED_THRESHOLD"))
+            return step_charge_ctl("1");
+
+        return step_charge_ctl("0");
     }
+
+    if (step_charge == 2) {
+        if (read_one_option("STEP_CHARGING_DISABLED") == 1)
+            return step_charge_ctl("0");
+
+        return step_charge_ctl("1");
+    }
+
+    return 0;
 }

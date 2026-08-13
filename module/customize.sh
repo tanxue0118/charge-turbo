@@ -88,26 +88,39 @@ check_file()
     ui_print " - 检查完成"
 }
 
+# 备份失败时不能静默跳过，否则会把用户旧配置静默换成默认值。
+backup_one_config()
+{
+    src="$1"
+    dst="$2"
+    label="$3"
+
+    if cp -af "${src}" "${dst}"; then
+        ui_print " - 检测到${label}：${src}"
+        return 0
+    fi
+
+    abort " 安装失败：无法备份${label} ${src}，为避免丢失配置已中止安装"
+}
+
 backup_old_config()
 {
-    mkdir -p "${TMPDIR}"
+    if ! mkdir -p "${TMPDIR}"; then
+        abort " 安装失败：无法创建临时目录 ${TMPDIR}"
+    fi
 
     # 先检查新位置：模块目录
     if [[ -f "${OLD_MODDIR}/option.txt" ]]; then
-        cp -af "${OLD_MODDIR}/option.txt" "${TMPDIR}/old_option.txt"
-        ui_print " - 检测到旧配置：${OLD_MODDIR}/option.txt"
+        backup_one_config "${OLD_MODDIR}/option.txt" "${TMPDIR}/old_option.txt" "旧配置"
     # 再检查旧版本遗留位置
     elif [[ -f "${OLD_DATA_DIR}/option.txt" ]]; then
-        cp -af "${OLD_DATA_DIR}/option.txt" "${TMPDIR}/old_option.txt"
-        ui_print " - 检测到旧配置：${OLD_DATA_DIR}/option.txt"
+        backup_one_config "${OLD_DATA_DIR}/option.txt" "${TMPDIR}/old_option.txt" "旧配置"
     fi
 
     if [[ -f "${OLD_MODDIR}/bypass_charge.txt" ]]; then
-        cp -af "${OLD_MODDIR}/bypass_charge.txt" "${TMPDIR}/old_bypass_charge.txt"
-        ui_print " - 检测到旧旁路列表：${OLD_MODDIR}/bypass_charge.txt"
+        backup_one_config "${OLD_MODDIR}/bypass_charge.txt" "${TMPDIR}/old_bypass_charge.txt" "旧旁路列表"
     elif [[ -f "${OLD_DATA_DIR}/bypass_charge.txt" ]]; then
-        cp -af "${OLD_DATA_DIR}/bypass_charge.txt" "${TMPDIR}/old_bypass_charge.txt"
-        ui_print " - 检测到旧旁路列表：${OLD_DATA_DIR}/bypass_charge.txt"
+        backup_one_config "${OLD_DATA_DIR}/bypass_charge.txt" "${TMPDIR}/old_bypass_charge.txt" "旧旁路列表"
     fi
 }
 
@@ -206,7 +219,9 @@ merge_old_bypass_charge()
     ui_print " - 使用旧旁路列表"
 
     # 旁路列表一般是用户自定义包名，直接沿用旧文件
-    cp -af "${TMPDIR}/old_bypass_charge.txt" "${TMPDIR}/new_bypass_charge.txt"
+    if ! cp -af "${TMPDIR}/old_bypass_charge.txt" "${TMPDIR}/new_bypass_charge.txt"; then
+        ui_print " ！无法沿用旧旁路列表，将使用新默认旁路列表"
+    fi
 }
 
 remove_thermals()
@@ -220,9 +235,12 @@ remove_thermals()
 
         # 复制旧的 thermal_files（保留动态补充的文件）
         if [ -d "/data/adb/modules/turbo-charge/thermal_files" ]; then
-            cp -af "/data/adb/modules/turbo-charge/thermal_files" "${MODPATH}/thermal_files"
-            file_count=$(find "${MODPATH}/thermal_files" -type f | wc -l)
-            ui_print " - 温控空文件已就绪：${file_count} 个"
+            if cp -af "/data/adb/modules/turbo-charge/thermal_files" "${MODPATH}/thermal_files"; then
+                file_count=$(find "${MODPATH}/thermal_files" -type f | wc -l)
+                ui_print " - 温控空文件已就绪：${file_count} 个"
+            else
+                ui_print " ！无法沿用旧的 thermal_files，将只使用模块包内的预置温控文件"
+            fi
         fi
     else
         ui_print " - 首次安装，执行温控文件扫描"
@@ -335,8 +353,11 @@ remove_thermals()
             [ -f "${existing}" ] && continue
 
             # 写入 thermal_files 目录
-            mkdir -p "${existing%/*}"
-            touch "${existing}"
+            if ! mkdir -p "${existing%/*}" || ! touch "${existing}"; then
+                ui_print " ！无法创建温控空文件，该温控文件不会被屏蔽: ${thermal}"
+                continue
+            fi
+
             ui_print " - 动态补充: ${thermal}"
         done
     fi
@@ -352,7 +373,9 @@ on_install()
     backup_old_config
 
     ui_print " - 解压模块文件"
-    unzip -o "${ZIPFILE}" -d "${MODPATH}" >&2
+    if ! unzip -o "${ZIPFILE}" -d "${MODPATH}" >&2; then
+        abort " 安装失败：解压模块文件出错，请重新下载模块包"
+    fi
 
     if [[ ! -f "${MODPATH}/module.prop" ]]; then
         ui_print " "
@@ -374,14 +397,18 @@ on_install()
         abort " 安装失败：模块包内缺少 bin/turbo-charge"
     fi
 
-    cp -af "${MODPATH}/option.txt" "${TMPDIR}/new_option.txt"
-    cp -af "${MODPATH}/bypass_charge.txt" "${TMPDIR}/new_bypass_charge.txt"
+    if ! cp -af "${MODPATH}/option.txt" "${TMPDIR}/new_option.txt" ||
+       ! cp -af "${MODPATH}/bypass_charge.txt" "${TMPDIR}/new_bypass_charge.txt"; then
+        abort " 安装失败：无法将默认配置复制到临时目录"
+    fi
 
     merge_old_option
     merge_old_bypass_charge
 
-    cp -af "${TMPDIR}/new_option.txt" "${MODPATH}/option.txt"
-    cp -af "${TMPDIR}/new_bypass_charge.txt" "${MODPATH}/bypass_charge.txt"
+    if ! cp -af "${TMPDIR}/new_option.txt" "${MODPATH}/option.txt" ||
+       ! cp -af "${TMPDIR}/new_bypass_charge.txt" "${MODPATH}/bypass_charge.txt"; then
+        abort " 安装失败：无法写入配置文件"
+    fi
 
     chmod 644 "${MODPATH}/option.txt"
     chmod 644 "${MODPATH}/bypass_charge.txt"
